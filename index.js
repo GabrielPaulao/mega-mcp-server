@@ -9,20 +9,18 @@ import { z } from 'zod';
 process.on('uncaughtException', (err) => console.error('Uncaught:', err.message));
 process.on('unhandledRejection', (r) => console.error('Rejection:', r));
 
-const MEGA_EMAIL      = process.env.MEGA_EMAIL;
-const MEGA_PASSWORD   = process.env.MEGA_PASSWORD;
+const MEGA_EMAIL       = process.env.MEGA_EMAIL;
+const MEGA_PASSWORD    = process.env.MEGA_PASSWORD;
 const MEGA_TOTP_SECRET = process.env.MEGA_TOTP_SECRET;
-const PORT            = process.env.PORT || 3000;
-const API_KEY         = process.env.MCP_API_KEY;
+const PORT             = process.env.PORT || 3000;
+const API_KEY          = process.env.MCP_API_KEY;
 
 if (!MEGA_EMAIL || !MEGA_PASSWORD) { console.error('ERRO: sem credenciais MEGA'); process.exit(1); }
 
 let _storage = null;
-let _storageErr = null;
 
 async function getStorage() {
   if (_storage) return _storage;
-  if (_storageErr) throw _storageErr;
 
   const loginOpts = {
     email: MEGA_EMAIL,
@@ -40,16 +38,18 @@ async function getStorage() {
   }
 
   return new Promise((resolve, reject) => {
-    const storage = new Storage(loginOpts, (err) => {
-      if (err) {
-        _storageErr = err;
-        console.error('MEGA login error:', err.message);
-        reject(err);
-      } else {
-        _storage = storage;
-        console.log('MEGA login OK, files:', Object.keys(storage.files || {}).length);
-        resolve(storage);
-      }
+    const storage = new Storage(loginOpts);
+
+    storage.on('ready', () => {
+      _storage = storage;
+      const count = Object.keys(storage.files || {}).length;
+      console.log('MEGA ready, files:', count);
+      resolve(storage);
+    });
+
+    storage.on('error', (err) => {
+      console.error('MEGA storage error:', err.message);
+      reject(err);
     });
   });
 }
