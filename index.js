@@ -51,6 +51,13 @@ async function getStorage() {
       console.error('MEGA storage error:', err.message);
       reject(err);
     });
+
+    storage.login((err) => {
+      if (err) {
+        console.error('MEGA login error:', err.message);
+        reject(err);
+      }
+    });
   });
 }
 
