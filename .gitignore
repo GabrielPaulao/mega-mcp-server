@@ -1,0 +1,20 @@
+# Dependencias
+node_modules/
+
+# Variaveis de ambiente - NUNCA commitar este arquivo
+.env
+
+# Logs
+*.log
+npm-debug.log*
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Build
+dist/
