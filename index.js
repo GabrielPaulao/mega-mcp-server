@@ -25,7 +25,6 @@ async function getStorage() {
   const loginOpts = {
     email: MEGA_EMAIL,
     password: MEGA_PASSWORD,
-    autologin: false,
   };
 
   if (MEGA_TOTP_SECRET) {
@@ -50,13 +49,6 @@ async function getStorage() {
     storage.on('error', (err) => {
       console.error('MEGA storage error:', err.message);
       reject(err);
-    });
-
-    storage.login((err) => {
-      if (err) {
-        console.error('MEGA login error:', err.message);
-        reject(err);
-      }
     });
   });
 }
