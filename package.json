@@ -1,21 +1,17 @@
 {
   "name": "mega-mcp-server",
   "version": "1.0.0",
-  "description": "Servidor MCP para conectar o MEGA.io ao Perplexity como conector personalizado",
-  "main": "index.js",
   "type": "module",
+  "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node --watch index.js"
+    "start": "node index.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.0",
-    "megajs": "^1.0.4",
     "dotenv": "^16.4.5",
-    "express": "^4.19.2"
+    "express": "^4.21.2",
+    "megajs": "^1.0.4"
   },
   "engines": {
     "node": ">=18.0.0"
-  },
-  "license": "MIT"
+  }
 }
