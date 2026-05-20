@@ -6,31 +6,43 @@ import express from 'express';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
 
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err.message);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection:', reason);
+});
+
 const MEGA_EMAIL    = process.env.MEGA_EMAIL;
 const MEGA_PASSWORD = process.env.MEGA_PASSWORD;
 const PORT          = process.env.PORT || 3000;
 const API_KEY       = process.env.MCP_API_KEY;
 
 if (!MEGA_EMAIL || !MEGA_PASSWORD) {
-  console.error('ERRO: Defina MEGA_EMAIL e MEGA_PASSWORD no arquivo .env');
+  console.error('ERRO: Defina MEGA_EMAIL e MEGA_PASSWORD');
   process.exit(1);
 }
 
 let storageInstance = null;
+let storageError    = null;
 
 async function getMegaStorage() {
   if (storageInstance) return storageInstance;
+  if (storageError) throw storageError;
   storageInstance = await new Promise((resolve, reject) => {
-    const s = new Storage({ email: MEGA_EMAIL, password: MEGA_PASSWORD });
+    const s = new Storage({ email: MEGA_EMAIL, password: MEGA_PASSWORD, userAgent: 'mega-mcp-server/1.0' });
     s.on('ready', () => resolve(s));
-    s.on('error', reject);
+    s.on('error', (err) => {
+      storageError = err;
+      reject(err);
+    });
   });
   return storageInstance;
 }
 
 function nodeToInfo(node) {
   return {
-    id:   node.nodeId,
+    id: node.nodeId,
     name: node.name,
     type: node.directory ? 'folder' : 'file',
     size: node.size || 0,
@@ -49,78 +61,109 @@ async function findNodeByPath(storage, pathParts) {
 
 const server = new McpServer({ name: 'mega-mcp-server', version: '1.0.0' });
 
-server.tool('listar_pasta', 'Lista arquivos e pastas dentro de um caminho do MEGA. Use / para a raiz.',
+server.tool('listar_pasta',
+  'Lista arquivos e pastas dentro de um caminho do MEGA. Use / para a raiz.',
   { caminho: z.string().describe('Caminho da pasta, ex: / ou /Fotos/2024') },
   async ({ caminho }) => {
-    const storage = await getMegaStorage();
-    let node;
-    if (caminho === '/') {
-      node = storage.root;
-    } else {
-      node = await findNodeByPath(storage, caminho.replace(/^\//, '').split('/'));
+    try {
+      const storage = await getMegaStorage();
+      let node;
+      if (caminho === '/') {
+        node = storage.root;
+      } else {
+        node = await findNodeByPath(storage, caminho.replace(/^\//, '').split('/'));
+      }
+      if (!node) return { content: [{ type: 'text', text: `Pasta nao encontrada: ${caminho}` }] };
+      const items = (node.children || []).map(nodeToInfo);
+      return { content: [{ type: 'text', text: JSON.stringify(items, null, 2) }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Erro: ${e.message}` }] };
     }
-    if (!node) return { content: [{ type: 'text', text: `Pasta nao encontrada: ${caminho}` }] };
-    const items = (node.children || []).map(nodeToInfo);
-    return { content: [{ type: 'text', text: JSON.stringify(items, null, 2) }] };
   }
 );
 
-server.tool('buscar_arquivo', 'Busca arquivos no MEGA pelo nome.',
+server.tool('buscar_arquivo',
+  'Busca arquivos no MEGA pelo nome.',
   { nome: z.string().describe('Nome ou parte do nome do arquivo') },
   async ({ nome }) => {
-    const storage = await getMegaStorage();
-    const lower = nome.toLowerCase();
-    const resultados = Object.values(storage.files)
-      .filter(n => n.name && n.name.toLowerCase().includes(lower))
-      .map(nodeToInfo);
-    return { content: [{ type: 'text', text: JSON.stringify(resultados, null, 2) }] };
+    try {
+      const storage = await getMegaStorage();
+      const lower = nome.toLowerCase();
+      const resultados = Object.values(storage.files)
+        .filter(n => n.name && n.name.toLowerCase().includes(lower))
+        .map(nodeToInfo);
+      return { content: [{ type: 'text', text: JSON.stringify(resultados, null, 2) }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Erro: ${e.message}` }] };
+    }
   }
 );
 
-server.tool('criar_pasta', 'Cria uma nova pasta no MEGA.',
+server.tool('criar_pasta',
+  'Cria uma nova pasta no MEGA.',
   {
     caminho_pai: z.string().describe('Caminho da pasta pai, ex: / ou /Projetos'),
     nome: z.string().describe('Nome da nova pasta'),
   },
   async ({ caminho_pai, nome }) => {
-    const storage = await getMegaStorage();
-    const pai = caminho_pai === '/' ? storage.root
-      : await findNodeByPath(storage, caminho_pai.replace(/^\//, '').split('/'));
-    if (!pai) return { content: [{ type: 'text', text: `Pasta pai nao encontrada: ${caminho_pai}` }] };
-    const nova = await new Promise((resolve, reject) =>
-      pai.mkdir(nome, (err, f) => err ? reject(err) : resolve(f))
-    );
-    return { content: [{ type: 'text', text: `Pasta criada: ${nova.name} (id: ${nova.nodeId})` }] };
+    try {
+      const storage = await getMegaStorage();
+      const pai = caminho_pai === '/'
+        ? storage.root
+        : await findNodeByPath(storage, caminho_pai.replace(/^\//, '').split('/'));
+      if (!pai) return { content: [{ type: 'text', text: `Pasta pai nao encontrada: ${caminho_pai}` }] };
+      const nova = await new Promise((resolve, reject) =>
+        pai.mkdir(nome, (err, f) => err ? reject(err) : resolve(f))
+      );
+      return { content: [{ type: 'text', text: `Pasta criada: ${nova.name} (id: ${nova.nodeId})` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Erro: ${e.message}` }] };
+    }
   }
 );
 
-server.tool('gerar_link', 'Gera link publico de compartilhamento para um arquivo no MEGA.',
+server.tool('gerar_link',
+  'Gera link publico de compartilhamento para um arquivo no MEGA.',
   { caminho: z.string().describe('Caminho completo do arquivo, ex: /Fotos/imagem.jpg') },
   async ({ caminho }) => {
-    const storage = await getMegaStorage();
-    const node = await findNodeByPath(storage, caminho.replace(/^\//, '').split('/'));
-    if (!node) return { content: [{ type: 'text', text: `Arquivo nao encontrado: ${caminho}` }] };
-    const link = await new Promise((resolve, reject) =>
-      node.link((err, l) => err ? reject(err) : resolve(l))
-    );
-    return { content: [{ type: 'text', text: link }] };
+    try {
+      const storage = await getMegaStorage();
+      const node = await findNodeByPath(storage, caminho.replace(/^\//, '').split('/'));
+      if (!node) return { content: [{ type: 'text', text: `Arquivo nao encontrado: ${caminho}` }] };
+      const link = await new Promise((resolve, reject) =>
+        node.link((err, l) => err ? reject(err) : resolve(l))
+      );
+      return { content: [{ type: 'text', text: link }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Erro: ${e.message}` }] };
+    }
   }
 );
 
-server.tool('info_conta', 'Retorna informacoes da conta MEGA (espaco usado e disponivel).', {},
+server.tool('info_conta',
+  'Retorna informacoes da conta MEGA (espaco usado e disponivel).',
+  {},
   async () => {
-    const storage = await getMegaStorage();
-    return { content: [{ type: 'text', text: JSON.stringify({
-      espaco_usado_GB: (storage.bytesUsed / 1e9).toFixed(2),
-      espaco_disponivel_GB: (storage.bytesTotal / 1e9).toFixed(2),
-    }, null, 2) }] };
+    try {
+      const storage = await getMegaStorage();
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            espaco_usado_GB: (storage.bytesUsed / 1e9).toFixed(2),
+            espaco_disponivel_GB: (storage.bytesTotal / 1e9).toFixed(2),
+          }, null, 2),
+        }],
+      };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Erro: ${e.message}` }] };
+    }
   }
 );
 
 const app = express();
 app.use(express.json());
 
-// Middleware de autenticacao - aceita x-api-key ou Authorization: Bearer
 app.use('/mcp', (req, res, next) => {
   if (!API_KEY) return next();
   const fromHeader = req.headers['x-api-key'];
@@ -134,26 +177,40 @@ app.use('/mcp', (req, res, next) => {
 const transports = {};
 
 app.post('/mcp', async (req, res) => {
-  const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: () => randomUUID(),
-    onsessioninitialized: (sessionId) => { transports[sessionId] = transport; },
-  });
-  transport.onclose = () => { delete transports[transport.sessionId]; };
-  await server.connect(transport);
-  await transport.handleRequest(req, res, req.body);
+  try {
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (sessionId) => { transports[sessionId] = transport; },
+    });
+    transport.onclose = () => { if (transport.sessionId) delete transports[transport.sessionId]; };
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch (e) {
+    console.error('POST /mcp error:', e.message);
+    if (!res.headersSent) res.status(500).json({ error: e.message });
+  }
 });
 
 app.get('/mcp', async (req, res) => {
-  const sessionId = req.headers['mcp-session-id'];
-  if (!sessionId || !transports[sessionId])
-    return res.status(400).json({ error: 'Session invalida ou expirada' });
-  await transports[sessionId].handleRequest(req, res);
+  try {
+    const sessionId = req.headers['mcp-session-id'];
+    if (!sessionId || !transports[sessionId])
+      return res.status(400).json({ error: 'Session invalida ou expirada' });
+    await transports[sessionId].handleRequest(req, res);
+  } catch (e) {
+    console.error('GET /mcp error:', e.message);
+    if (!res.headersSent) res.status(500).json({ error: e.message });
+  }
 });
 
 app.delete('/mcp', async (req, res) => {
-  const sessionId = req.headers['mcp-session-id'];
-  if (sessionId && transports[sessionId]) await transports[sessionId].close();
-  res.status(200).end();
+  try {
+    const sessionId = req.headers['mcp-session-id'];
+    if (sessionId && transports[sessionId]) await transports[sessionId].close();
+    res.status(200).end();
+  } catch (e) {
+    res.status(200).end();
+  }
 });
 
 app.get('/health', (_, res) => res.json({ status: 'ok', service: 'mega-mcp-server' }));
