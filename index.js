@@ -67,6 +67,18 @@ async function getStorage() {
   return _storagePromise;
 }
 
+function buildTree(node, depth = 0, maxDepth = 2) {
+  const result = {
+    name: node.name,
+    type: node.directory ? 'folder' : 'file',
+    size: node.size || 0,
+  };
+  if (node.directory && depth < maxDepth && node.children) {
+    result.children = node.children.map(c => buildTree(c, depth + 1, maxDepth));
+  }
+  return result;
+}
+
 function createServer() {
   const server = new McpServer({
     name: 'mega-mcp-server',
@@ -75,16 +87,33 @@ function createServer() {
 
   server.tool(
     'list_files',
-    'Lista todos os arquivos e pastas no MEGA',
-    {},
-    async () => {
+    'Lista arquivos e pastas no MEGA. Use path para navegar (ex: "" para raiz, "Filmes" para a pasta Filmes)',
+    {
+      path: z.string().optional().describe('Caminho da pasta (vazio = raiz)')
+    },
+    async ({ path }) => {
       const storage = await getStorage();
-      const files = Object.values(storage.files || {}).map(f => ({
+      const root = storage.root;
+
+      // Navegar ate a pasta desejada
+      let target = root;
+      if (path && path.trim()) {
+        const parts = path.trim().split('/').filter(Boolean);
+        for (const part of parts) {
+          const found = (target.children || []).find(c => c.name === part && c.directory);
+          if (!found) return { content: [{ type: 'text', text: `Pasta nao encontrada: ${part}` }] };
+          target = found;
+        }
+      }
+
+      const children = (target.children || []).map(f => ({
         name: f.name,
-        size: f.size,
-        type: f.directory ? 'folder' : 'file'
+        type: f.directory ? 'folder' : 'file',
+        size: f.size || 0,
+        children_count: f.directory && f.children ? f.children.length : undefined,
       }));
-      return { content: [{ type: 'text', text: JSON.stringify(files, null, 2) }] };
+
+      return { content: [{ type: 'text', text: JSON.stringify({ path: path || '/', total: children.length, items: children }, null, 2) }] };
     }
   );
 
