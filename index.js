@@ -111,37 +111,66 @@ function buildServer() {
 const app = express();
 app.use(express.json());
 
+// Request logger
+app.use((req, res, next) => {
+  console.log(`${req.method} ${req.path} headers: ${JSON.stringify(req.headers)}`);
+  next();
+});
+
+// Auth middleware
 app.use('/mcp', (req, res, next) => {
   if (!API_KEY) return next();
-  const key = req.headers['x-api-key'] || (req.headers['authorization'] || '').replace('Bearer ', '') || req.query.apiKey;
-  if (key !== API_KEY) return res.status(401).json({ error: 'Unauthorized' });
+  const key = req.headers['x-api-key'] ||
+               (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '') ||
+               req.query.apiKey;
+  if (key !== API_KEY) {
+    console.log('Auth failed, key received:', key);
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
   next();
 });
 
 const sessions = {};
 
 app.post('/mcp', async (req, res) => {
+  console.log('POST /mcp body:', JSON.stringify(req.body));
   try {
     const server = buildServer();
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: (sid) => { sessions[sid] = transport; },
+      onsessioninitialized: (sid) => {
+        sessions[sid] = transport;
+        console.log('Session initialized:', sid);
+      },
     });
-    transport.onclose = () => { if (transport.sessionId) delete sessions[transport.sessionId]; };
+    transport.onclose = () => {
+      if (transport.sessionId) {
+        delete sessions[transport.sessionId];
+        console.log('Session closed:', transport.sessionId);
+      }
+    };
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
   } catch (e) {
-    console.error('POST /mcp error:', e.message);
+    console.error('POST /mcp error:', e.message, e.stack);
     if (!res.headersSent) res.status(500).json({ error: e.message });
   }
 });
 
 app.get('/mcp', async (req, res) => {
+  const sid = req.headers['mcp-session-id'];
+  console.log('GET /mcp session:', sid);
+  if (!sid || !sessions[sid]) {
+    return res.status(405).set('Allow', 'POST').json({
+      error: 'Use POST to initiate a new MCP session',
+      endpoint: '/mcp',
+      method: 'POST'
+    });
+  }
   try {
-    const sid = req.headers['mcp-session-id'];
-    if (!sid || !sessions[sid]) return res.status(400).json({ error: 'Session invalida' });
     await sessions[sid].handleRequest(req, res);
   } catch (e) {
+    console.error('GET /mcp error:', e.message);
     if (!res.headersSent) res.status(500).json({ error: e.message });
   }
 });
@@ -154,7 +183,7 @@ app.delete('/mcp', async (req, res) => {
   res.status(200).end();
 });
 
-app.get('/health', (_, res) => res.json({ status: 'ok' }));
+app.get('/health', (_, res) => res.json({ status: 'ok', service: 'mega-mcp-server', version: '1.0.0' }));
 
 app.listen(PORT, () => {
   console.log('mega-mcp-server rodando na porta ' + PORT);
