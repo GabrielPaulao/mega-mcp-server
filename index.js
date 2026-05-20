@@ -18,39 +18,53 @@ const API_KEY          = process.env.MCP_API_KEY;
 if (!MEGA_EMAIL || !MEGA_PASSWORD) { console.error('ERRO: sem credenciais MEGA'); process.exit(1); }
 
 let _storage = null;
+let _storagePromise = null;
 
-async function getStorage() {
-  if (_storage) return _storage;
-
+function createStoragePromise() {
   const loginOpts = {
     email: MEGA_EMAIL,
     password: MEGA_PASSWORD,
+    keepalive: false,
   };
 
   if (MEGA_TOTP_SECRET) {
     try {
       loginOpts.secondFactorCode = authenticator.generate(MEGA_TOTP_SECRET);
-      console.log('TOTP code generated for 2FA login');
+      console.log('TOTP code generated');
     } catch (e) {
-      console.error('Failed to generate TOTP:', e.message);
+      console.error('TOTP error:', e.message);
     }
   }
 
   return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error('MEGA login timeout after 45s'));
+    }, 45000);
+
     const storage = new Storage(loginOpts);
 
     storage.on('ready', () => {
+      clearTimeout(timeout);
       _storage = storage;
-      const count = Object.keys(storage.files || {}).length;
-      console.log('MEGA ready, files:', count);
+      console.log('MEGA ready, files:', Object.keys(storage.files || {}).length);
       resolve(storage);
     });
 
     storage.on('error', (err) => {
-      console.error('MEGA storage error:', err.message);
+      clearTimeout(timeout);
+      console.error('MEGA error:', err.message);
+      _storagePromise = null;
       reject(err);
     });
   });
+}
+
+async function getStorage() {
+  if (_storage) return _storage;
+  if (!_storagePromise) {
+    _storagePromise = createStoragePromise();
+  }
+  return _storagePromise;
 }
 
 function createServer() {
