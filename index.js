@@ -66,8 +66,33 @@ function calcSize(node) {
   return (node.children || []).reduce((acc, c) => acc + calcSize(c), 0);
 }
 
+// Detecta MIME type pelo nome do arquivo
+function getMimeType(filename) {
+  const ext = (filename || '').split('.').pop().toLowerCase();
+  const mimeMap = {
+    pdf: 'application/pdf',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    svg: 'image/svg+xml',
+    mp4: 'video/mp4',
+    mp3: 'audio/mpeg',
+    zip: 'application/zip',
+    rar: 'application/x-rar-compressed',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    txt: 'text/plain',
+    json: 'application/json',
+    csv: 'text/csv',
+  };
+  return mimeMap[ext] || 'application/octet-stream';
+}
+
 function createServer() {
-  const server = new McpServer({ name: 'mega-mcp-server', version: '2.0.0' });
+  const server = new McpServer({ name: 'mega-mcp-server', version: '2.1.0' });
 
   // ── FERRAMENTAS ORIGINAIS ──────────────────────────────────────────────
 
@@ -352,6 +377,49 @@ function createServer() {
     }
   );
 
+  // ── NOVA FERRAMENTA v2.1 ──────────────────────────────────────────────
+
+  // mega_download_base64 — baixa um arquivo binario e retorna em base64 para ser anexado no chat
+  server.tool('mega_download_base64',
+    'Baixa um arquivo binario do MEGA e retorna seu conteudo em base64. Use para anexar PDFs, imagens e outros arquivos diretamente no chat.',
+    { path: z.string().describe('Caminho completo do arquivo no MEGA (ex: "MegaSync/Faculdade/arquivo.pdf")') },
+    async ({ path }) => {
+      const storage = await getStorage();
+      const node = resolvePath(storage, path);
+      if (node.directory) throw new Error('O caminho informado e uma pasta, nao um arquivo');
+
+      const MAX_SIZE = 20 * 1024 * 1024; // 20 MB limite
+      if (node.size > MAX_SIZE) {
+        throw new Error(`Arquivo muito grande (${(node.size / 1048576).toFixed(1)} MB). Limite: 20 MB. Use mega_get para obter o link de download.`);
+      }
+
+      const buf = await new Promise((res, rej) => {
+        const chunks = [];
+        const stream = node.download();
+        stream.on('data', (chunk) => chunks.push(chunk));
+        stream.on('end', () => res(Buffer.concat(chunks)));
+        stream.on('error', rej);
+      });
+
+      const base64 = buf.toString('base64');
+      const mimeType = getMimeType(node.name);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              nome: node.name,
+              tamanho_bytes: node.size,
+              mime_type: mimeType,
+              base64: base64,
+            })
+          }
+        ]
+      };
+    }
+  );
+
   return server;
 }
 
@@ -383,6 +451,6 @@ app.post('/mcp', async (req, res) => {
 });
 
 app.get('/mcp', (req, res) => res.status(405).json({ error: 'Method not allowed. Use POST.' }));
-app.get('/health', (req, res) => res.json({ status: 'ok', version: '2.0.0', tools: 16 }));
+app.get('/health', (req, res) => res.json({ status: 'ok', version: '2.1.0', tools: 17 }));
 
-app.listen(PORT, () => console.log(`MCP server v2.0.0 rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`MCP server v2.1.0 rodando na porta ${PORT}`));
