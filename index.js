@@ -91,8 +91,36 @@ function getMimeType(filename) {
   return mimeMap[ext] || 'application/octet-stream';
 }
 
+// Cache em memoria para buffers de arquivos baixados (TTL de 10 minutos)
+const _bufferCache = new Map();
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutos
+
+function setCacheBuffer(key, buf) {
+  _bufferCache.set(key, { buf, ts: Date.now() });
+}
+
+function getCacheBuffer(key) {
+  const entry = _bufferCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > CACHE_TTL_MS) {
+    _bufferCache.delete(key);
+    return null;
+  }
+  return entry.buf;
+}
+
+function purgeCacheExpired() {
+  const now = Date.now();
+  for (const [key, entry] of _bufferCache.entries()) {
+    if (now - entry.ts > CACHE_TTL_MS) _bufferCache.delete(key);
+  }
+}
+
+// Purge periodico a cada 5 minutos
+setInterval(purgeCacheExpired, 5 * 60 * 1000);
+
 function createServer() {
-  const server = new McpServer({ name: 'mega-mcp-server', version: '2.1.0' });
+  const server = new McpServer({ name: 'mega-mcp-server', version: '2.2.0' });
 
   // ── FERRAMENTAS ORIGINAIS ──────────────────────────────────────────────
 
@@ -144,7 +172,6 @@ function createServer() {
 
   // ── NOVAS FERRAMENTAS v2.0 ────────────────────────────────────────────
 
-  // mega_pwd — mostra o caminho atual (sempre retorna raiz pois megajs nao tem estado de sessao)
   server.tool('mega_pwd',
     'Mostra o diretorio raiz do MEGA',
     {},
@@ -154,7 +181,6 @@ function createServer() {
     }
   );
 
-  // mega_cd — navega e lista conteudo de um diretorio
   server.tool('mega_cd',
     'Navega para uma pasta e lista seu conteudo',
     { path: z.string().describe('Caminho da pasta (ex: "Filmes" ou "Filmes/Acao")') },
@@ -171,7 +197,6 @@ function createServer() {
     }
   );
 
-  // mega_df — espaco total e usado na conta
   server.tool('mega_df',
     'Mostra o espaco total e usado na conta MEGA',
     {},
@@ -184,7 +209,6 @@ function createServer() {
     }
   );
 
-  // mega_du — tamanho de uma pasta ou arquivo
   server.tool('mega_du',
     'Mostra o tamanho de uma pasta ou arquivo no MEGA',
     { path: z.string().describe('Caminho do arquivo ou pasta') },
@@ -197,7 +221,6 @@ function createServer() {
     }
   );
 
-  // mega_mkdir — cria uma pasta
   server.tool('mega_mkdir',
     'Cria uma nova pasta no MEGA',
     {
@@ -215,7 +238,6 @@ function createServer() {
     }
   );
 
-  // mega_rm — remove arquivo ou pasta
   server.tool('mega_rm',
     'Remove um arquivo ou pasta do MEGA',
     { path: z.string().describe('Caminho do arquivo ou pasta a remover') },
@@ -229,7 +251,6 @@ function createServer() {
     }
   );
 
-  // mega_mv — move ou renomeia arquivo/pasta
   server.tool('mega_mv',
     'Move ou renomeia um arquivo ou pasta no MEGA',
     {
@@ -251,7 +272,6 @@ function createServer() {
     }
   );
 
-  // mega_cp — copia arquivo para outra pasta
   server.tool('mega_cp',
     'Copia um arquivo para outra pasta no MEGA',
     {
@@ -267,7 +287,6 @@ function createServer() {
     }
   );
 
-  // mega_cat — le conteudo de um arquivo texto remoto
   server.tool('mega_cat',
     'Le o conteudo de um arquivo de texto armazenado no MEGA',
     { path: z.string().describe('Caminho do arquivo') },
@@ -286,7 +305,6 @@ function createServer() {
     }
   );
 
-  // mega_get — gera link de download direto para um arquivo
   server.tool('mega_get',
     'Gera link de download direto para um arquivo no MEGA',
     { path: z.string().describe('Caminho do arquivo') },
@@ -299,7 +317,6 @@ function createServer() {
     }
   );
 
-  // mega_put — upload de qualquer arquivo via URL externa (busca o arquivo de uma URL e sobe para o MEGA)
   server.tool('mega_put',
     'Faz upload de um arquivo para o MEGA a partir de uma URL publica',
     {
@@ -321,7 +338,6 @@ function createServer() {
     }
   );
 
-  // mega_export — cria link publico com opcao de senha
   server.tool('mega_export',
     'Cria um link publico de compartilhamento para um arquivo ou pasta',
     {
@@ -342,7 +358,6 @@ function createServer() {
     }
   );
 
-  // mega_share — compartilha pasta com outro usuario MEGA
   server.tool('mega_share',
     'Compartilha uma pasta com outro usuario MEGA via email',
     {
@@ -360,7 +375,6 @@ function createServer() {
     }
   );
 
-  // mega_import — importa um link publico para a conta
   server.tool('mega_import',
     'Importa um link publico do MEGA para dentro da sua conta',
     {
@@ -377,9 +391,9 @@ function createServer() {
     }
   );
 
-  // ── NOVA FERRAMENTA v2.1 ──────────────────────────────────────────────
+  // ── FERRAMENTAS v2.1 ──────────────────────────────────────────────────
 
-  // mega_download_base64 — baixa um arquivo binario e retorna em base64 para ser anexado no chat
+  // mega_download_base64 — baixa arquivo pequeno inteiro em base64 (ate ~50KB recomendado)
   server.tool('mega_download_base64',
     'Baixa um arquivo binario do MEGA e retorna seu conteudo em base64. Use para anexar PDFs, imagens e outros arquivos diretamente no chat.',
     { path: z.string().describe('Caminho completo do arquivo no MEGA (ex: "MegaSync/Faculdade/arquivo.pdf")') },
@@ -420,6 +434,91 @@ function createServer() {
     }
   );
 
+  // ── FERRAMENTAS v2.2 ──────────────────────────────────────────────────
+
+  /**
+   * mega_download_base64_chunk
+   *
+   * Baixa um arquivo do MEGA em pedacos (chunks) de base64, permitindo
+   * trabalhar com arquivos de qualquer tamanho sem truncamento no chat.
+   *
+   * Fluxo de uso:
+   *   1. Chame com chunk=0 para obter o primeiro pedaco e o total_chunks.
+   *   2. Chame com chunk=1, chunk=2, ... ate chunk=total_chunks-1.
+   *   3. Concatene todos os base64 na ordem e decodifique para obter o arquivo completo.
+   *
+   * O arquivo e baixado do MEGA uma unica vez e fica em cache por 10 minutos.
+   * Chamadas subsequentes para o mesmo path reutilizam o cache automaticamente.
+   */
+  server.tool('mega_download_base64_chunk',
+    'Baixa um arquivo do MEGA em chunks de base64. Permite ler arquivos de qualquer tamanho sem truncamento. ' +
+    'Use chunk=0 para comecar — a resposta inclui total_chunks para saber quantas chamadas fazer. ' +
+    'Concatene os campos base64_chunk de cada resposta em ordem para montar o arquivo completo.',
+    {
+      path:       z.string().describe('Caminho completo do arquivo no MEGA (ex: "MegaSync/Faculdade/arquivo.pdf")'),
+      chunk:      z.number().int().min(0).describe('Indice do chunk a retornar (comeca em 0)'),
+      chunk_size: z.number().int().min(1024).max(200000).optional()
+                   .describe('Tamanho de cada chunk em bytes de base64 (padrao: 50000 ~= 37KB de dados binarios). Max: 200000.'),
+    },
+    async ({ path, chunk, chunk_size }) => {
+      const CHUNK_SIZE = chunk_size || 50000; // bytes de base64 por chunk
+
+      const storage = await getStorage();
+      const node = resolvePath(storage, path);
+      if (node.directory) throw new Error('O caminho informado e uma pasta, nao um arquivo');
+
+      const MAX_SIZE = 50 * 1024 * 1024; // 50 MB limite para chunks
+      if (node.size > MAX_SIZE) {
+        throw new Error(`Arquivo muito grande (${(node.size / 1048576).toFixed(1)} MB). Limite: 50 MB.`);
+      }
+
+      // Usa cache para evitar re-download em chamadas subsequentes
+      let buf = getCacheBuffer(path);
+      if (!buf) {
+        buf = await new Promise((res, rej) => {
+          const chunks = [];
+          const stream = node.download();
+          stream.on('data', (c) => chunks.push(c));
+          stream.on('end', () => res(Buffer.concat(chunks)));
+          stream.on('error', rej);
+        });
+        setCacheBuffer(path, buf);
+      }
+
+      const fullBase64 = buf.toString('base64');
+      const totalChunks = Math.ceil(fullBase64.length / CHUNK_SIZE);
+
+      if (chunk >= totalChunks) {
+        throw new Error(`Chunk ${chunk} fora do intervalo. Total de chunks: ${totalChunks} (0 a ${totalChunks - 1}).`);
+      }
+
+      const start = chunk * CHUNK_SIZE;
+      const end   = Math.min(start + CHUNK_SIZE, fullBase64.length);
+      const base64Chunk = fullBase64.slice(start, end);
+
+      const mimeType = getMimeType(node.name);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              nome:          node.name,
+              mime_type:     mimeType,
+              tamanho_bytes: node.size,
+              chunk_atual:   chunk,
+              total_chunks:  totalChunks,
+              chunk_size:    CHUNK_SIZE,
+              base64_total_chars: fullBase64.length,
+              base64_chunk:  base64Chunk,
+              concluido:     chunk === totalChunks - 1,
+            })
+          }
+        ]
+      };
+    }
+  );
+
   return server;
 }
 
@@ -451,6 +550,6 @@ app.post('/mcp', async (req, res) => {
 });
 
 app.get('/mcp', (req, res) => res.status(405).json({ error: 'Method not allowed. Use POST.' }));
-app.get('/health', (req, res) => res.json({ status: 'ok', version: '2.1.0', tools: 17 }));
+app.get('/health', (req, res) => res.json({ status: 'ok', version: '2.2.0', tools: 18 }));
 
-app.listen(PORT, () => console.log(`MCP server v2.1.0 rodando na porta ${PORT}`));
+app.listen(PORT, () => console.log(`MCP server v2.2.0 rodando na porta ${PORT}`));
