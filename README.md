@@ -1,40 +1,83 @@
-# mega-mcp-server
+# 🗂️ MEGA MCP Server
 
-Servidor MCP (Model Context Protocol) para conectar o **MEGA.io** ao **Perplexity** como conector personalizado, funcionando igual ao Google Drive e OneDrive nativos.
+<div align="center">
 
-## Ferramentas disponíveis
+![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?style=for-the-badge&logo=node.js&logoColor=white)
+![JavaScript](https://img.shields.io/badge/JavaScript-ES2022-F7DF1E?style=for-the-badge&logo=javascript&logoColor=black)
+![License](https://img.shields.io/badge/Licença-MIT-blue?style=for-the-badge)
+![MCP](https://img.shields.io/badge/Protocol-MCP-6366f1?style=for-the-badge)
+![MEGA](https://img.shields.io/badge/Storage-MEGA.io-d9272e?style=for-the-badge&logo=mega&logoColor=white)
 
-| Ferramenta | O que faz |
-|---|---|
-| `listar_pasta` | Lista arquivos e pastas de um caminho do MEGA |
-| `buscar_arquivo` | Busca arquivos pelo nome em toda a conta |
-| `criar_pasta` | Cria uma nova pasta no MEGA |
-| `gerar_link` | Gera link público de compartilhamento |
-| `info_conta` | Mostra espaço usado e disponível na conta |
+**Servidor [Model Context Protocol (MCP)](https://modelcontextprotocol.io) que conecta sua conta MEGA.io ao Perplexity — funcionando como um conector nativo, igual ao Google Drive e OneDrive.**
 
-## Pré-requisitos
+[🚀 Deploy Rápido](#-deploy-gratuito) · [📖 Documentação](#-ferramentas-disponíveis) · [🔌 Conectar ao Perplexity](#-conectando-ao-perplexity)
 
-- Node.js 18 ou superior
-- Conta MEGA (qualquer plano)
-- Perplexity Pro/Max/Enterprise (para adicionar o conector)
-- Hospedagem com HTTPS (Railway, Render, Fly.io, etc.)
+</div>
 
-## Instalação
+---
+
+## ✨ O que é isso?
+
+Este projeto implementa um servidor compatível com o protocolo **MCP (Model Context Protocol)**, permitindo que o **Perplexity AI** acesse e gerencie arquivos da sua conta **MEGA.io** diretamente durante as conversas — sem precisar baixar nada manualmente.
+
+Com ele você pode pedir ao Perplexity coisas como:
+- *"Liste os arquivos da minha pasta Faculdade"*
+- *"Qual o espaço disponível na minha conta MEGA?"*
+- *"Gere um link público para o arquivo relatório.pdf"*
+- *"Leia o conteúdo do arquivo notas.txt"*
+
+---
+
+## 🛠️ Ferramentas disponíveis
+
+| Ferramenta | Descrição | Parâmetros |
+|---|---|---|
+| `list_files` | Lista arquivos e pastas de um caminho | `path` (string) |
+| `get_file_link` | Obtém link público de um arquivo pelo nome | `name` (string) |
+| `upload_text` | Envia um arquivo de texto para o MEGA | `filename`, `content`, `path?` |
+| `mega_pwd` | Mostra o diretório raiz da conta | — |
+| `mega_cd` | Navega para uma pasta e lista seu conteúdo | `path` (string) |
+| `mega_df` | Exibe espaço total e usado na conta | — |
+| `mega_du` | Mostra o tamanho de um arquivo ou pasta | `path` (string) |
+| `mega_mkdir` | Cria uma nova pasta | `name`, `parent?` |
+| `mega_rm` | Remove um arquivo ou pasta | `path` (string) |
+| `mega_mv` | Move ou renomeia um arquivo/pasta | `source`, `dest` |
+| `mega_cp` | Copia um arquivo para outra pasta | `source`, `dest` |
+| `mega_cat` | Lê o conteúdo de um arquivo de texto | `path` (string) |
+| `mega_get` | Gera link de download direto | `path` (string) |
+| `mega_put` | Faz upload de arquivo a partir de URL pública | `url`, `filename`, `path?` |
+| `mega_export` | Cria link público de compartilhamento | `path`, `password?` |
+| `mega_share` | Compartilha pasta com outro usuário MEGA | `path`, `email` |
+| `mega_import` | Importa link público para sua conta | `link`, `path?` |
+| `mega_download_base64` | Baixa arquivo binário em base64 | `path` (string) |
+| `mega_download_base64_chunk` | Baixa arquivo grande em chunks base64 | `path`, `chunk`, `chunk_size?` |
+
+---
+
+## 📋 Pré-requisitos
+
+- **Node.js** 18 ou superior
+- **Conta MEGA** (qualquer plano, incluindo gratuito)
+- **Perplexity Pro/Max/Enterprise** (para adicionar conectores personalizados)
+- **Hospedagem com HTTPS** — Railway, Render, Fly.io, etc.
+
+---
+
+## ⚡ Instalação
 
 ```bash
-# Clone o repositório
+# 1. Clone o repositório
 git clone https://github.com/GabrielPaulao/mega-mcp-server.git
 cd mega-mcp-server
 
-# Instale as dependências
+# 2. Instale as dependências
 npm install
 
-# Configure as variáveis de ambiente
+# 3. Configure as variáveis de ambiente
 cp .env.example .env
-# Edite o .env com seu email e senha do MEGA
 ```
 
-## Configuração do .env
+Edite o arquivo `.env` com suas credenciais:
 
 ```env
 MEGA_EMAIL=seu-email@exemplo.com
@@ -43,49 +86,122 @@ PORT=3000
 MCP_API_KEY=chave-gerada-com-openssl-rand-hex-32
 ```
 
-> **IMPORTANTE:** Nunca commite o arquivo `.env` no GitHub. Ele já está no `.gitignore`.
+> ⚠️ **IMPORTANTE:** Nunca commite o arquivo `.env`. Ele já está protegido pelo `.gitignore`.
 
-## Rodando localmente
+### Gerar a MCP_API_KEY
+
+```bash
+# Linux / macOS
+openssl rand -hex 32
+
+# Windows (PowerShell)
+[System.Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+```
+
+### Rodar localmente
 
 ```bash
 npm start
+# Servidor disponível em: http://localhost:3000/mcp
 ```
 
-O servidor sobe em `http://localhost:3000/mcp`.
+---
 
-## Deploy (hospedagem gratuita)
+## 🚀 Deploy Gratuito
+
+### Render *(recomendado)*
+
+1. Crie conta em [render.com](https://render.com)
+2. **New** → **Web Service** → conecte este repositório
+3. Configure:
+   - **Runtime:** Node
+   - **Build Command:** `npm install`
+   - **Start Command:** `npm start`
+4. Em **Environment Variables**, adicione `MEGA_EMAIL`, `MEGA_PASSWORD` e `MCP_API_KEY`
+5. Clique em **Deploy** — URL HTTPS gerada automaticamente ✅
 
 ### Railway
-1. Crie conta em railway.app
-2. New Project > Deploy from GitHub repo
+
+1. Crie conta em [railway.app](https://railway.app)
+2. **New Project** → **Deploy from GitHub repo**
 3. Selecione este repositório
-4. Em **Variables**, adicione as mesmas variáveis do `.env`
-5. O Railway gera uma URL HTTPS automaticamente
+4. Em **Variables**, adicione as variáveis do `.env`
+5. O Railway gera a URL HTTPS automaticamente ✅
 
-### Render
-1. Crie conta em render.com
-2. New > Web Service > conecte este repositório
-3. Build Command: `npm install`
-4. Start Command: `npm start`
-5. Adicione as variáveis de ambiente no painel
-6. O Render gera uma URL HTTPS automaticamente
+### Fly.io
 
-## Conectando ao Perplexity
+```bash
+# Instale o flyctl e faça login
+curl -L https://fly.io/install.sh | sh
+fly auth login
 
-1. Abra o Perplexity e vá em **Configurações > Conectores**
+# Deploy
+fly launch
+fly secrets set MEGA_EMAIL=... MEGA_PASSWORD=... MCP_API_KEY=...
+fly deploy
+```
+
+---
+
+## 🔌 Conectando ao Perplexity
+
+1. Acesse o Perplexity e vá em **Configurações → Conectores**
 2. Clique em **Adicionar conector personalizado**
-3. Informe a URL do seu servidor: `https://sua-url.railway.app/mcp`
-4. Escolha **API Key** como autenticação
-5. Header: `x-api-key` / Valor: o mesmo `MCP_API_KEY` do seu `.env`
-6. Salve e pronto
+3. Informe a URL: `https://sua-url.onrender.com/mcp`
+4. Escolha **API Key** como método de autenticação
+   - **Header:** `x-api-key`
+   - **Valor:** o mesmo `MCP_API_KEY` do seu `.env`
+5. Salve e pronto — o MEGA aparecerá como conector nativo 🎉
 
-## Segurança
+---
 
-- Credenciais do MEGA ficam **somente no servidor**, nunca expostas ao Perplexity
-- O endpoint `/mcp` é protegido por API Key
-- O arquivo `.env` está bloqueado pelo `.gitignore`
-- Nenhuma senha ou token é commitado no repositório
+## 🏗️ Arquitetura
 
-## Licença
+```
+┌─────────────────┐        HTTPS/MCP       ┌──────────────────────┐
+│  Perplexity AI  │ ◄────────────────────► │  mega-mcp-server     │
+│  (cliente MCP)  │                        │  (Node.js + Express) │
+└─────────────────┘                        └──────────┬───────────┘
+                                                      │
+                                                      │ megajs SDK
+                                                      ▼
+                                           ┌──────────────────────┐
+                                           │     MEGA.io API      │
+                                           │  (armazenamento)     │
+                                           └──────────────────────┘
+```
 
-MIT
+---
+
+## 🔒 Segurança
+
+- ✅ Credenciais do MEGA ficam **somente no servidor**, nunca expostas ao Perplexity
+- ✅ O endpoint `/mcp` é protegido por **API Key** em cada requisição
+- ✅ O arquivo `.env` está bloqueado pelo `.gitignore`
+- ✅ Nenhuma senha ou token é commitado no repositório
+- ✅ Comunicação sempre via **HTTPS** em produção
+
+---
+
+## 📦 Tecnologias utilizadas
+
+| Pacote | Versão | Função |
+|---|---|---|
+| `megajs` | latest | SDK oficial do MEGA.io |
+| `@modelcontextprotocol/sdk` | latest | Implementação do protocolo MCP |
+| `express` | latest | Servidor HTTP |
+| `dotenv` | latest | Gerenciamento de variáveis de ambiente |
+
+---
+
+## 📄 Licença
+
+Distribuído sob a licença **MIT**. Veja [`LICENSE`](LICENSE) para mais informações.
+
+---
+
+<div align="center">
+
+Feito com ☁️ para integrar o MEGA ao ecossistema de IA
+
+</div>
