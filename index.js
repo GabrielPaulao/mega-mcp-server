@@ -10,8 +10,8 @@ process.on('uncaughtException', (err) => console.error('Uncaught:', err.message)
 process.on('unhandledRejection', (r) => console.error('Rejection:', r));
 
 // ── Constante única de versão e total de ferramentas ──────────────────────────
-const VERSION     = '2.5.0';
-const TOOLS_COUNT = 21;
+const VERSION     = '2.6.0';
+const TOOLS_COUNT = 22;
 
 const MEGA_EMAIL       = process.env.MEGA_EMAIL;
 const MEGA_PASSWORD    = process.env.MEGA_PASSWORD;
@@ -106,49 +106,67 @@ function resolvePath(storage, path) {
   return target;
 }
 
-// Busca recursiva por nome em toda a arvore a partir de um no raiz
-// query: string simples (contida no nome, case-insensitive) ou glob com * e ?
+// Busca recursiva por nome (usada pelo mega_search)
 function searchNodes(node, query, tipo, parentPath, results, limit) {
   if (results.length >= limit) return;
-  const children = node.children || [];
-  for (const child of children) {
+  for (const child of (node.children || [])) {
     if (results.length >= limit) break;
     const childPath = parentPath ? `${parentPath}/${child.name}` : child.name;
     const isFolder  = !!child.directory;
-
-    // Filtro de tipo
-    if (tipo === 'file'   &&  isFolder) { /* pula */ }
-    else if (tipo === 'folder' && !isFolder) { /* pula */ }
-    else {
-      // Correspondeência: suporte a glob simples (* e ?)
-      const nameLC  = (child.name || '').toLowerCase();
-      const queryLC = query.toLowerCase();
-      const matched = queryLC.includes('*') || queryLC.includes('?')
-        ? globMatch(nameLC, queryLC)
-        : nameLC.includes(queryLC);
-
-      if (matched) {
-        results.push({
-          nome:   child.name,
-          tipo:   isFolder ? 'folder' : 'file',
-          path:   childPath,
-          tamanho_bytes: isFolder ? null : (child.size || 0),
-        });
-      }
+    if (!(tipo === 'file' && isFolder) && !(tipo === 'folder' && !isFolder)) {
+      const nameLC = (child.name || '').toLowerCase(), queryLC = query.toLowerCase();
+      const matched = (queryLC.includes('*') || queryLC.includes('?'))
+        ? globMatch(nameLC, queryLC) : nameLC.includes(queryLC);
+      if (matched) results.push({ nome: child.name, tipo: isFolder ? 'folder' : 'file', path: childPath, tamanho_bytes: isFolder ? null : (child.size || 0) });
     }
-
-    // Desce na pasta independente de match
     if (isFolder) searchNodes(child, query, tipo, childPath, results, limit);
+  }
+}
+
+// Listagem recursiva em arvore (usada pelo mega_ls_recursive)
+// Retorna a arvore como objeto aninhado OU lista plana, conforme formato solicitado
+function buildTree(node, parentPath, formato, items, maxDepth, currentDepth) {
+  if (currentDepth > maxDepth) return null;
+  const children = node.children || [];
+
+  if (formato === 'flat') {
+    // Lista plana: cada item com path completo
+    for (const child of children) {
+      const childPath = parentPath ? `${parentPath}/${child.name}` : child.name;
+      items.push({
+        path:          childPath,
+        nome:          child.name,
+        tipo:          child.directory ? 'folder' : 'file',
+        profundidade:  currentDepth,
+        tamanho_bytes: child.directory ? null : (child.size || 0),
+      });
+      if (child.directory) buildTree(child, childPath, formato, items, maxDepth, currentDepth + 1);
+    }
+    return items;
+  } else {
+    // Arvore aninhada (tree)
+    return children.map(child => {
+      const childPath = parentPath ? `${parentPath}/${child.name}` : child.name;
+      const entry = {
+        nome:          child.name,
+        tipo:          child.directory ? 'folder' : 'file',
+        path:          childPath,
+        tamanho_bytes: child.directory ? null : (child.size || 0),
+      };
+      if (child.directory && currentDepth < maxDepth) {
+        entry.filhos = buildTree(child, childPath, formato, [], maxDepth, currentDepth + 1);
+      } else if (child.directory) {
+        entry.filhos = null; // profundidade maxima atingida
+        entry.aviso  = 'profundidade_maxima';
+      }
+      return entry;
+    });
   }
 }
 
 // Glob simples: * = qualquer sequencia, ? = qualquer char
 function globMatch(str, pattern) {
-  const re = new RegExp(
-    '^' + pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&')
-                 .replace(/\*/g, '.*')
-                 .replace(/\?/g, '.') + '$'
-  );
+  const re = new RegExp('^' + pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$');
   return re.test(str);
 }
 
@@ -256,9 +274,7 @@ function createServer() {
       return withStorage(async (storage) => {
         const target = resolvePath(storage, path);
         if (!target.directory) throw new Error('O caminho informado nao e uma pasta');
-        const children = (target.children || []).map(f => ({
-          name: f.name, type: f.directory ? 'folder' : 'file', size: f.size || 0,
-        }));
+        const children = (target.children || []).map(f => ({ name: f.name, type: f.directory ? 'folder' : 'file', size: f.size || 0 }));
         return { content: [{ type: 'text', text: JSON.stringify({ pwd: path, total: children.length, items: children }, null, 2) }] };
       });
     }
@@ -293,8 +309,7 @@ function createServer() {
       return withStorage(async (storage) => {
         const parentNode = parent ? resolvePath(storage, parent) : storage.root;
         await new Promise((res, rej) => parentNode.mkdir(name, (err, folder) => err ? rej(err) : res(folder)));
-        const fullPath = parent ? `${parent}/${name}` : `/${name}`;
-        return { content: [{ type: 'text', text: `Pasta '${fullPath}' criada com sucesso.` }] };
+        return { content: [{ type: 'text', text: `Pasta '${parent ? `${parent}/${name}` : `/${name}`}' criada com sucesso.` }] };
       });
     }
   );
@@ -510,26 +525,75 @@ function createServer() {
     },
     async ({ query, path, tipo, limite }) => {
       if (!query || !query.trim()) throw new Error('O parametro query nao pode ser vazio');
-      const limit = limite || 50;
-      const filter = tipo || 'all';
-
+      const limit = limite || 50, filter = tipo || 'all';
       return withStorage(async (storage) => {
-        const root    = path ? resolvePath(storage, path) : storage.root;
+        const root = path ? resolvePath(storage, path) : storage.root;
         const results = [];
         searchNodes(root, query.trim(), filter, path || '', results, limit);
-
         const truncated = results.length >= limit;
         return {
           content: [{ type: 'text', text: JSON.stringify({
-            query,
-            busca_em:    path || '/',
-            tipo_filtro: filter,
-            total:       results.length,
-            truncado:    truncated,
-            aviso:       truncated ? `Resultado limitado a ${limit} itens. Use o parametro 'limite' ou refine a busca.` : undefined,
-            resultados:  results,
+            query, busca_em: path || '/', tipo_filtro: filter,
+            total: results.length, truncado: truncated,
+            aviso: truncated ? `Resultado limitado a ${limit} itens. Use o parametro 'limite' ou refine a busca.` : undefined,
+            resultados: results,
           }, null, 2) }]
         };
+      });
+    }
+  );
+
+  // ── FERRAMENTAS v2.6 ──────────────────────────────────────────────────
+
+  server.tool('mega_ls_recursive',
+    'Lista recursivamente todos os arquivos e subpastas dentro de uma pasta do MEGA. ' +
+    'Suporta dois formatos: "flat" (lista plana com caminho completo de cada item, ideal para processar) ' +
+    'e "tree" (arvore aninhada, ideal para visualizar a estrutura). ' +
+    'Use o parametro profundidade para controlar ate quantos niveis descer (padrao: 10).',
+    {
+      path:        z.string().optional().describe('Caminho da pasta a listar (vazio = raiz)'),
+      formato:     z.enum(['flat', 'tree']).optional().describe('Formato da resposta: flat (lista plana, padrao) ou tree (arvore aninhada)'),
+      profundidade: z.number().int().min(1).max(20).optional().describe('Profundidade maxima de recursao (padrao: 10, max: 20)'),
+      tipo:        z.enum(['all', 'file', 'folder']).optional().describe('Filtrar por tipo: all (padrao), file (apenas arquivos), folder (apenas pastas)'),
+    },
+    async ({ path, formato, profundidade, tipo }) => {
+      const fmt      = formato     || 'flat';
+      const maxDepth = profundidade || 10;
+      const filter   = tipo        || 'all';
+
+      return withStorage(async (storage) => {
+        const root = path ? resolvePath(storage, path) : storage.root;
+        if (!root.directory) throw new Error('O caminho informado nao e uma pasta');
+
+        if (fmt === 'flat') {
+          // Lista plana — aplica filtro de tipo
+          const rawItems = [];
+          buildTree(root, path || '', 'flat', rawItems, maxDepth, 1);
+          const items = filter === 'all' ? rawItems
+            : rawItems.filter(i => filter === 'file' ? i.tipo === 'file' : i.tipo === 'folder');
+
+          return {
+            content: [{ type: 'text', text: JSON.stringify({
+              pasta:        path || '/',
+              formato:      'flat',
+              profundidade: maxDepth,
+              tipo_filtro:  filter,
+              total:        items.length,
+              itens:        items,
+            }, null, 2) }]
+          };
+        } else {
+          // Arvore aninhada — filtro de tipo nao se aplica (estrutura precisa das pastas)
+          const tree = buildTree(root, path || '', 'tree', [], maxDepth, 1);
+          return {
+            content: [{ type: 'text', text: JSON.stringify({
+              pasta:        path || '/',
+              formato:      'tree',
+              profundidade: maxDepth,
+              filhos:       tree,
+            }, null, 2) }]
+          };
+        }
       });
     }
   );
