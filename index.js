@@ -1,15 +1,17 @@
 import 'dotenv/config';
 import { Storage } from 'megajs';
 import express from 'express';
-import { authenticator } from 'otplib';
+import * as OTPLib from 'otplib';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 
+const authenticator = OTPLib.authenticator ?? OTPLib.default?.authenticator;
+
 process.on('uncaughtException', (err) => console.error('Uncaught:', err.message));
 process.on('unhandledRejection', (r) => console.error('Rejection:', r));
 
-const VERSION     = '2.6.1';
+const VERSION     = '2.6.2';
 const TOOLS_COUNT = 21;
 
 const MEGA_EMAIL       = process.env.MEGA_EMAIL;
@@ -30,10 +32,9 @@ const LOGIN_TIMEOUT_MS   = 120_000;
 const MAX_RETRIES        = 5;
 const RETRY_DELAYS_MS    = [5_000, 15_000, 30_000, 60_000, 120_000];
 
-// Tenta o login uma unica vez com timeout
 function attemptLogin() {
   const loginOpts = { email: MEGA_EMAIL, password: MEGA_PASSWORD, keepalive: false };
-  if (MEGA_TOTP_SECRET) {
+  if (MEGA_TOTP_SECRET && authenticator) {
     try { loginOpts.secondFactorCode = authenticator.generate(MEGA_TOTP_SECRET); }
     catch (e) { console.error('TOTP error:', e.message); }
   }
@@ -56,7 +57,6 @@ function attemptLogin() {
   });
 }
 
-// Tenta login com retry + backoff exponencial
 async function loginWithRetry(attempt = 0) {
   _storagePromise = null; _storage = null;
   try {
@@ -201,7 +201,6 @@ function getCacheBuffer(key) {
 }
 setInterval(() => { const now = Date.now(); for (const [k, e] of _bufferCache) if (now - e.ts > CACHE_TTL_MS) _bufferCache.delete(k); }, 5 * 60 * 1000);
 
-// ── Keep-alive: faz ping no /health a cada 10 minutos para evitar hibernacao ──
 function startKeepAlive() {
   const KEEP_ALIVE_INTERVAL_MS = 10 * 60 * 1000;
   setInterval(async () => {
@@ -215,7 +214,6 @@ function startKeepAlive() {
   console.log(`Keep-alive ativo (ping a cada ${KEEP_ALIVE_INTERVAL_MS / 60000} min)`);
 }
 
-// ── McpServer — instancia unica criada no boot ────────────────────────────────
 function buildMcpServer() {
   const server = new McpServer({ name: 'mega-mcp-server', version: VERSION });
 
@@ -500,15 +498,12 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Pre-aquece a sessao MEGA no boot com retry automatico
 console.log(`MCP server v${VERSION} rodando na porta ${PORT}`);
 app.listen(PORT, () => {
   getStorage()
     .then(() => startKeepAlive())
     .catch((err) => {
       console.error('MEGA: erro critico no boot:', err.message);
-      // Nao encerra o processo — o ciclo de retry em loginWithRetry ja cuida da reconexao
-      // Inicia o keep-alive mesmo assim para manter o processo vivo no Render
       startKeepAlive();
     });
 });
