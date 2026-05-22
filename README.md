@@ -8,7 +8,7 @@
 ![MCP](https://img.shields.io/badge/Protocol-MCP-6366f1?style=for-the-badge)
 ![MEGA](https://img.shields.io/badge/Storage-MEGA.io-d9272e?style=for-the-badge&logo=mega&logoColor=white)
 ![Status](https://img.shields.io/badge/Status-Produção%20✅-22c55e?style=for-the-badge)
-![Version](https://img.shields.io/badge/Versão-1.0.0-f59e0b?style=for-the-badge)
+![Version](https://img.shields.io/badge/Versão-2.6.1-f59e0b?style=for-the-badge)
 
 **Servidor [Model Context Protocol (MCP)](https://modelcontextprotocol.io) que conecta sua conta MEGA.io ao Perplexity — funcionando como um conector nativo, igual ao Google Drive e OneDrive.**
 
@@ -18,7 +18,7 @@
 
 ---
 
-> ✅ **Conexão verificada em produção** — integração com o Perplexity funcionando plenamente em 21/05/2026. O servidor está rodando no Render e todas as 20 ferramentas MCP foram testadas com sucesso, incluindo leitura de PDFs do MEGA diretamente no chat.
+> ✅ **Conexão verificada em produção** — integração com o Perplexity funcionando plenamente em 22/05/2026. O servidor está rodando no Render e todas as 21 ferramentas MCP foram testadas com sucesso, incluindo leitura de PDFs do MEGA diretamente no chat.
 
 ---
 
@@ -31,6 +31,7 @@ Com ele você pode pedir ao Perplexity coisas como:
 - *"Qual o espaço disponível na minha conta MEGA?"*
 - *"Gere um link público para o arquivo relatório.pdf"*
 - *"Leia o conteúdo do arquivo notas.txt"*
+- *"Busque todos os PDFs na pasta Trabalho"*
 - *"Leia o PDF X e me faça um resumo"*
 
 ---
@@ -39,25 +40,28 @@ Com ele você pode pedir ao Perplexity coisas como:
 
 | Ferramenta | Descrição | Parâmetros |
 |---|---|---|
-| `list_files` | Lista arquivos e pastas de um caminho | `path` (string) |
-| `get_file_link` | Obtém link público de um arquivo pelo nome | `name` (string) |
+| `list_files` | Lista arquivos e pastas de um caminho | `path?` |
+| `get_file_link` | Obtém link público de um arquivo pelo nome | `name` |
 | `upload_text` | Envia um arquivo de texto para o MEGA | `filename`, `content`, `path?` |
 | `mega_pwd` | Mostra o diretório raiz da conta | — |
-| `mega_cd` | Navega para uma pasta e lista seu conteúdo | `path` (string) |
+| `mega_cd` | Navega para uma pasta e lista seu conteúdo | `path` |
 | `mega_df` | Exibe espaço total e usado na conta | — |
-| `mega_du` | Mostra o tamanho de um arquivo ou pasta | `path` (string) |
+| `mega_du` | Mostra o tamanho de um arquivo ou pasta | `path` |
 | `mega_mkdir` | Cria uma nova pasta | `name`, `parent?` |
-| `mega_rm` | Remove um arquivo ou pasta | `path` (string) |
+| `mega_rm` | Remove um arquivo ou pasta | `path` |
 | `mega_mv` | Move ou renomeia um arquivo/pasta | `source`, `dest` |
 | `mega_cp` | Copia um arquivo para outra pasta | `source`, `dest` |
-| `mega_cat` | Lê o conteúdo de um arquivo de texto | `path` (string) |
-| `mega_get` | Gera link de download direto | `path` (string) |
+| `mega_cat` | Lê o conteúdo de um arquivo de texto | `path` |
+| `mega_get` | Gera link de download direto | `path` |
 | `mega_put` | Faz upload de arquivo a partir de URL pública | `url`, `filename`, `path?` |
 | `mega_export` | Cria link público de compartilhamento | `path`, `password?` |
 | `mega_share` | Compartilha pasta com outro usuário MEGA | `path`, `email` |
 | `mega_import` | Importa link público para sua conta | `link`, `path?` |
-| `mega_download_base64` | Baixa arquivo binário em base64 | `path` (string) |
-| `mega_download_base64_chunk` | Baixa arquivo grande em chunks base64 | `path`, `chunk`, `chunk_size?` |
+| `mega_download_base64` | Baixa arquivo binário em base64 (até 20 MB) | `path` |
+| `mega_download_base64_chunk` | Baixa arquivo grande em chunks base64 (até 50 MB) | `path`, `chunk`, `chunk_size?` |
+| `mega_search` | Busca arquivos/pastas por nome com wildcards | `query`, `path?`, `tipo?`, `limite?` |
+
+> 💡 **21 ferramentas** disponíveis. O servidor reconecta automaticamente ao MEGA em caso de queda de sessão, com backoff exponencial e keep-alive interno.
 
 ---
 
@@ -91,6 +95,8 @@ MEGA_EMAIL=seu-email@exemplo.com
 MEGA_PASSWORD=sua-senha-do-mega
 PORT=3000
 MCP_API_KEY=chave-gerada-com-openssl-rand-hex-32
+# Opcional — apenas se sua conta MEGA tiver 2FA ativado
+# MEGA_TOTP_SECRET=sua-chave-totp
 ```
 
 > ⚠️ **IMPORTANTE:** Nunca commite o arquivo `.env`. Ele já está protegido pelo `.gitignore`.
@@ -126,6 +132,8 @@ npm start
    - **Start Command:** `npm start`
 4. Em **Environment Variables**, adicione `MEGA_EMAIL`, `MEGA_PASSWORD` e `MCP_API_KEY`
 5. Clique em **Deploy** — URL HTTPS gerada automaticamente ✅
+
+> 💡 O servidor inclui um **keep-alive interno** que faz ping a cada 10 minutos, evitando hibernações no plano gratuito do Render.
 
 ### Railway
 
@@ -180,6 +188,19 @@ fly deploy
 
 ---
 
+## 🔁 Resiliência & Reconexão
+
+O servidor foi projetado para manter a sessão MEGA estável em ambientes de produção:
+
+- **Retry com backoff exponencial** — até 5 tentativas com delays de 5 s, 15 s, 30 s, 60 s e 120 s
+- **Ciclo de recuperação** — após falha definitiva, tenta reconectar a cada 5 minutos
+- **Detecção de sessão expirada** — sessões com mais de 4 horas são invalidadas proativamente
+- **Reconexão automática em operações** — erros de sessão durante o uso reconectam e retentam automaticamente
+- **Keep-alive interno** — ping no `/health` a cada 10 minutos para manter o processo ativo
+- **Endpoint `/health`** — retorna status da sessão, versão e tempo de conexão
+
+---
+
 ## 🔒 Segurança
 
 - ✅ Credenciais do MEGA ficam **somente no servidor**, nunca expostas ao Perplexity
@@ -187,6 +208,7 @@ fly deploy
 - ✅ O arquivo `.env` está bloqueado pelo `.gitignore`
 - ✅ Nenhuma senha ou token é commitado no repositório
 - ✅ Comunicação sempre via **HTTPS** em produção
+- ✅ Suporte a **2FA (TOTP)** via `MEGA_TOTP_SECRET`
 
 ---
 
@@ -194,10 +216,12 @@ fly deploy
 
 | Pacote | Versão | Função |
 |---|---|---|
-| `megajs` | latest | SDK oficial do MEGA.io |
+| `megajs` | latest | SDK do MEGA.io |
 | `@modelcontextprotocol/sdk` | latest | Implementação do protocolo MCP |
 | `express` | latest | Servidor HTTP |
 | `dotenv` | latest | Gerenciamento de variáveis de ambiente |
+| `otplib` | latest | Geração de código TOTP para 2FA |
+| `zod` | latest | Validação de parâmetros das ferramentas |
 
 ---
 
