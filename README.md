@@ -8,7 +8,7 @@
 ![MCP](https://img.shields.io/badge/Protocol-MCP-6366f1?style=for-the-badge)
 ![MEGA](https://img.shields.io/badge/Storage-MEGA.io-d9272e?style=for-the-badge&logo=mega&logoColor=white)
 ![Status](https://img.shields.io/badge/Status-Produção%20✅-22c55e?style=for-the-badge)
-![Version](https://img.shields.io/badge/Versão-2.6.1-f59e0b?style=for-the-badge)
+![Version](https://img.shields.io/badge/Versão-2.8.1-f59e0b?style=for-the-badge)
 
 **Servidor [Model Context Protocol (MCP)](https://modelcontextprotocol.io) que conecta sua conta MEGA.io ao Perplexity — funcionando como um conector nativo, igual ao Google Drive e OneDrive.**
 
@@ -43,25 +43,35 @@ Com ele você pode pedir ao Perplexity coisas como:
 | `list_files` | Lista arquivos e pastas de um caminho | `path?` |
 | `get_file_link` | Obtém link público de um arquivo pelo nome | `name` |
 | `upload_text` | Envia um arquivo de texto para o MEGA | `filename`, `content`, `path?` |
-| `mega_pwd` | Mostra o diretório raiz da conta | — |
+| `mega_pwd` | Mostra o diretório raiz e info básica da conta | — |
 | `mega_cd` | Navega para uma pasta e lista seu conteúdo | `path` |
-| `mega_df` | Exibe espaço total e usado na conta | — |
+| `mega_df` | Exibe espaço total e usado na conta ¹ | — |
 | `mega_du` | Mostra o tamanho de um arquivo ou pasta | `path` |
 | `mega_mkdir` | Cria uma nova pasta | `name`, `parent?` |
 | `mega_rm` | Remove um arquivo ou pasta | `path` |
 | `mega_mv` | Move ou renomeia um arquivo/pasta | `source`, `dest` |
 | `mega_cp` | Copia um arquivo para outra pasta | `source`, `dest` |
-| `mega_cat` | Lê o conteúdo de um arquivo de texto | `path` |
+| `mega_cat` | Lê o conteúdo de um arquivo de texto (até 10 MB) | `path` |
 | `mega_get` | Gera link de download direto | `path` |
 | `mega_put` | Faz upload de arquivo a partir de URL pública | `url`, `filename`, `path?` |
 | `mega_export` | Cria link público de compartilhamento | `path`, `password?` |
-| `mega_share` | Compartilha pasta com outro usuário MEGA | `path`, `email` |
+| `mega_share` | Compartilha pasta com outro usuário MEGA | `path`, `email`, `acesso?` |
 | `mega_import` | Importa link público para sua conta | `link`, `path?` |
 | `mega_download_base64` | Baixa arquivo binário em base64 (até 20 MB) | `path` |
 | `mega_download_base64_chunk` | Baixa arquivo grande em chunks base64 (até 50 MB) | `path`, `chunk`, `chunk_size?` |
 | `mega_search` | Busca arquivos/pastas por nome com wildcards | `query`, `path?`, `tipo?`, `limite?` |
 
 > 💡 **21 ferramentas** disponíveis. O servidor reconecta automaticamente ao MEGA em caso de queda de sessão, com backoff exponencial e keep-alive interno.
+
+> ¹ **`mega_df`:** A quota (`bytesUsed`/`bytesTotal`) só é populada pelo SDK do `megajs` após um `reload()` completo da árvore de arquivos. Em servidores com limite de **512 MB de RAM** (ex: plano free do Render), esse reload causa crash por OOM. Por isso, `mega_df` retornará um aviso quando a quota não estiver disponível. Para verificar o espaço usado, acesse [mega.nz](https://mega.nz) diretamente.
+
+### Parâmetros de `mega_share`
+
+| Parâmetro | Obrigatório | Valores | Padrão |
+|---|---|---|---|
+| `path` | ✅ | Caminho da pasta | — |
+| `email` | ✅ | E-mail do usuário MEGA | — |
+| `acesso` | ❌ | `leitura`, `leitura_escrita`, `full` | `leitura_escrita` |
 
 ---
 
@@ -71,6 +81,8 @@ Com ele você pode pedir ao Perplexity coisas como:
 - **Conta MEGA** (qualquer plano, incluindo gratuito)
 - **Perplexity Pro/Max/Enterprise** (para adicionar conectores personalizados)
 - **Hospedagem com HTTPS** — Railway, Render, Fly.io, etc.
+
+> ⚠️ **Render (plano free):** O servidor consome ~200–300 MB de RAM em operação normal. O limite do plano free é 512 MB. **Não utilize `storage.reload()`** nem carregue árvores de arquivos muito grandes em memória para não ultrapassar o limite.
 
 ---
 
@@ -197,7 +209,7 @@ O servidor foi projetado para manter a sessão MEGA estável em ambientes de pro
 - **Detecção de sessão expirada** — sessões com mais de 4 horas são invalidadas proativamente
 - **Reconexão automática em operações** — erros de sessão durante o uso reconectam e retentam automaticamente
 - **Keep-alive interno** — ping no `/health` a cada 10 minutos para manter o processo ativo
-- **Endpoint `/health`** — retorna status da sessão, versão e tempo de conexão
+- **Endpoint `/health`** — retorna status da sessão, versão, número de ferramentas e tempo de conexão
 
 ---
 
