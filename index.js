@@ -10,8 +10,8 @@ process.on('uncaughtException', (err) => console.error('Uncaught:', err.message)
 process.on('unhandledRejection', (r) => console.error('Rejection:', r));
 
 // ── Constante única de versão e total de ferramentas ──────────────────────────
-const VERSION     = '2.4.0';
-const TOOLS_COUNT = 20;
+const VERSION     = '2.5.0';
+const TOOLS_COUNT = 21;
 
 const MEGA_EMAIL       = process.env.MEGA_EMAIL;
 const MEGA_PASSWORD    = process.env.MEGA_PASSWORD;
@@ -25,77 +25,53 @@ let _storage        = null;
 let _storagePromise = null;
 let _lastLoginAt    = null;
 
-// Tempo máximo que uma sessão é considerada válida antes de revalidar (4 horas)
 const SESSION_MAX_AGE_MS = 4 * 60 * 60 * 1000;
 
 function createStoragePromise() {
-  const loginOpts = {
-    email: MEGA_EMAIL,
-    password: MEGA_PASSWORD,
-    keepalive: false,
-  };
+  const loginOpts = { email: MEGA_EMAIL, password: MEGA_PASSWORD, keepalive: false };
   if (MEGA_TOTP_SECRET) {
-    try {
-      loginOpts.secondFactorCode = authenticator.generate(MEGA_TOTP_SECRET);
-    } catch (e) {
-      console.error('TOTP error:', e.message);
-    }
+    try { loginOpts.secondFactorCode = authenticator.generate(MEGA_TOTP_SECRET); }
+    catch (e) { console.error('TOTP error:', e.message); }
   }
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('MEGA login timeout after 45s')), 45000);
     const storage = new Storage(loginOpts);
     storage.on('ready', () => {
       clearTimeout(timeout);
-      _storage     = storage;
-      _lastLoginAt = Date.now();
+      _storage = storage; _lastLoginAt = Date.now();
       console.log('MEGA: sessão estabelecida');
       resolve(storage);
     });
     storage.on('error', (err) => {
-      clearTimeout(timeout);
-      _storagePromise = null;
-      _storage        = null;
-      reject(err);
+      clearTimeout(timeout); _storagePromise = null; _storage = null; reject(err);
     });
   });
 }
 
-// Verifica se a sessão ainda está viva fazendo uma operação leve (leitura do root)
 async function isSessionAlive(storage) {
   try {
-    // Acessa root.children — se a sessão morreu isso lança ou retorna undefined
-    const root = storage.root;
-    if (!root) return false;
-    // Sessão expirou por tempo — força relogin após SESSION_MAX_AGE_MS
+    if (!storage.root) return false;
     if (_lastLoginAt && (Date.now() - _lastLoginAt) > SESSION_MAX_AGE_MS) {
       console.log('MEGA: sessão expirou por tempo (>4h), reconectando...');
       return false;
     }
     return true;
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
 
 async function getStorage() {
-  // Se temos uma sessão ativa, valida antes de reusar
   if (_storage) {
     const alive = await isSessionAlive(_storage);
     if (!alive) {
-      // Sessão morta — descarta e reconecta
       console.log('MEGA: sessão inválida, reconectando...');
       try { _storage.close?.(); } catch { /* ignora */ }
-      _storage        = null;
-      _storagePromise = null;
-      _lastLoginAt    = null;
+      _storage = null; _storagePromise = null; _lastLoginAt = null;
     }
   }
-
   if (!_storagePromise) _storagePromise = createStoragePromise();
   return _storagePromise;
 }
 
-// Wrapper que executa uma operação e, se der erro de sessão, reconecta e tenta 1x mais
 async function withStorage(fn) {
   let storage = await getStorage();
   try {
@@ -103,25 +79,17 @@ async function withStorage(fn) {
   } catch (err) {
     const msg = (err.message || '').toLowerCase();
     const isSessionError =
-      msg.includes('esid') ||
-      msg.includes('sid') ||
-      msg.includes('enoent') ||
-      msg.includes('session') ||
-      msg.includes('access denied') ||
-      msg.includes('-15') ||  // MEGA error code para sessão inválida
-      msg.includes('-16');    // MEGA error code para acesso negado
-
+      msg.includes('esid') || msg.includes('sid') || msg.includes('enoent') ||
+      msg.includes('session') || msg.includes('access denied') ||
+      msg.includes('-15') || msg.includes('-16');
     if (isSessionError) {
-      console.log(`MEGA: erro de sessão detectado ("${err.message}"), reconectando e retentando...`);
+      console.log(`MEGA: erro de sessão ("${err.message}"), reconectando...`);
       try { _storage?.close?.(); } catch { /* ignora */ }
-      _storage        = null;
-      _storagePromise = null;
-      _lastLoginAt    = null;
-
+      _storage = null; _storagePromise = null; _lastLoginAt = null;
       storage = await getStorage();
-      return await fn(storage); // segunda tentativa após reconexão
+      return await fn(storage);
     }
-    throw err; // outro tipo de erro — propaga normalmente
+    throw err;
   }
 }
 
@@ -138,6 +106,52 @@ function resolvePath(storage, path) {
   return target;
 }
 
+// Busca recursiva por nome em toda a arvore a partir de um no raiz
+// query: string simples (contida no nome, case-insensitive) ou glob com * e ?
+function searchNodes(node, query, tipo, parentPath, results, limit) {
+  if (results.length >= limit) return;
+  const children = node.children || [];
+  for (const child of children) {
+    if (results.length >= limit) break;
+    const childPath = parentPath ? `${parentPath}/${child.name}` : child.name;
+    const isFolder  = !!child.directory;
+
+    // Filtro de tipo
+    if (tipo === 'file'   &&  isFolder) { /* pula */ }
+    else if (tipo === 'folder' && !isFolder) { /* pula */ }
+    else {
+      // Correspondeência: suporte a glob simples (* e ?)
+      const nameLC  = (child.name || '').toLowerCase();
+      const queryLC = query.toLowerCase();
+      const matched = queryLC.includes('*') || queryLC.includes('?')
+        ? globMatch(nameLC, queryLC)
+        : nameLC.includes(queryLC);
+
+      if (matched) {
+        results.push({
+          nome:   child.name,
+          tipo:   isFolder ? 'folder' : 'file',
+          path:   childPath,
+          tamanho_bytes: isFolder ? null : (child.size || 0),
+        });
+      }
+    }
+
+    // Desce na pasta independente de match
+    if (isFolder) searchNodes(child, query, tipo, childPath, results, limit);
+  }
+}
+
+// Glob simples: * = qualquer sequencia, ? = qualquer char
+function globMatch(str, pattern) {
+  const re = new RegExp(
+    '^' + pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+                 .replace(/\*/g, '.*')
+                 .replace(/\?/g, '.') + '$'
+  );
+  return re.test(str);
+}
+
 // Calcula tamanho recursivo de um no
 function calcSize(node) {
   if (!node.directory) return node.size || 0;
@@ -148,23 +162,13 @@ function calcSize(node) {
 function getMimeType(filename) {
   const ext = (filename || '').split('.').pop().toLowerCase();
   const mimeMap = {
-    pdf: 'application/pdf',
-    png: 'image/png',
-    jpg: 'image/jpeg',
-    jpeg: 'image/jpeg',
-    gif: 'image/gif',
-    webp: 'image/webp',
-    svg: 'image/svg+xml',
-    mp4: 'video/mp4',
-    mp3: 'audio/mpeg',
-    zip: 'application/zip',
-    rar: 'application/x-rar-compressed',
+    pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+    gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', mp4: 'video/mp4',
+    mp3: 'audio/mpeg', zip: 'application/zip', rar: 'application/x-rar-compressed',
     docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-    txt: 'text/plain',
-    json: 'application/json',
-    csv: 'text/csv',
+    txt: 'text/plain', json: 'application/json', csv: 'text/csv',
   };
   return mimeMap[ext] || 'application/octet-stream';
 }
@@ -173,27 +177,18 @@ function getMimeType(filename) {
 const _bufferCache = new Map();
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
-function setCacheBuffer(key, buf) {
-  _bufferCache.set(key, { buf, ts: Date.now() });
-}
-
+function setCacheBuffer(key, buf) { _bufferCache.set(key, { buf, ts: Date.now() }); }
 function getCacheBuffer(key) {
   const entry = _bufferCache.get(key);
   if (!entry) return null;
-  if (Date.now() - entry.ts > CACHE_TTL_MS) {
-    _bufferCache.delete(key);
-    return null;
-  }
+  if (Date.now() - entry.ts > CACHE_TTL_MS) { _bufferCache.delete(key); return null; }
   return entry.buf;
 }
-
 function purgeCacheExpired() {
   const now = Date.now();
-  for (const [key, entry] of _bufferCache.entries()) {
+  for (const [key, entry] of _bufferCache.entries())
     if (now - entry.ts > CACHE_TTL_MS) _bufferCache.delete(key);
-  }
 }
-
 setInterval(purgeCacheExpired, 5 * 60 * 1000);
 
 function createServer() {
@@ -208,9 +203,7 @@ function createServer() {
       return withStorage(async (storage) => {
         const target = resolvePath(storage, path || '');
         const children = (target.children || []).map(f => ({
-          name: f.name,
-          type: f.directory ? 'folder' : 'file',
-          size: f.size || 0,
+          name: f.name, type: f.directory ? 'folder' : 'file', size: f.size || 0,
           children_count: f.directory && f.children ? f.children.length : undefined,
         }));
         return { content: [{ type: 'text', text: JSON.stringify({ path: path || '/', total: children.length, items: children }, null, 2) }] };
@@ -241,7 +234,7 @@ function createServer() {
     async ({ filename, content, path }) => {
       return withStorage(async (storage) => {
         const folder = path ? resolvePath(storage, path) : storage.root;
-        const buf = Buffer.from(content, 'utf8');
+        const buf    = Buffer.from(content, 'utf8');
         await new Promise((res, rej) => {
           folder.upload({ name: filename, size: buf.length }, buf, (err) => err ? rej(err) : res());
         });
@@ -252,13 +245,8 @@ function createServer() {
 
   // ── NOVAS FERRAMENTAS v2.0 ────────────────────────────────────────────
 
-  server.tool('mega_pwd',
-    'Mostra o diretorio raiz do MEGA',
-    {},
-    async () => {
-      await getStorage();
-      return { content: [{ type: 'text', text: '/' }] };
-    }
+  server.tool('mega_pwd', 'Mostra o diretorio raiz do MEGA', {},
+    async () => { await getStorage(); return { content: [{ type: 'text', text: '/' }] }; }
   );
 
   server.tool('mega_cd',
@@ -269,22 +257,17 @@ function createServer() {
         const target = resolvePath(storage, path);
         if (!target.directory) throw new Error('O caminho informado nao e uma pasta');
         const children = (target.children || []).map(f => ({
-          name: f.name,
-          type: f.directory ? 'folder' : 'file',
-          size: f.size || 0,
+          name: f.name, type: f.directory ? 'folder' : 'file', size: f.size || 0,
         }));
         return { content: [{ type: 'text', text: JSON.stringify({ pwd: path, total: children.length, items: children }, null, 2) }] };
       });
     }
   );
 
-  server.tool('mega_df',
-    'Mostra o espaco total e usado na conta MEGA',
-    {},
+  server.tool('mega_df', 'Mostra o espaco total e usado na conta MEGA', {},
     async () => {
       return withStorage(async (storage) => {
-        const bytesUsed  = storage.bytesUsed  || 0;
-        const bytesTotal = storage.bytesTotal || 0;
+        const bytesUsed = storage.bytesUsed || 0, bytesTotal = storage.bytesTotal || 0;
         const gb = (b) => (b / 1073741824).toFixed(2) + ' GB';
         return { content: [{ type: 'text', text: JSON.stringify({ usado: gb(bytesUsed), total: gb(bytesTotal), livre: gb(bytesTotal - bytesUsed), bytes_usados: bytesUsed, bytes_total: bytesTotal }, null, 2) }] };
       });
@@ -298,24 +281,18 @@ function createServer() {
       return withStorage(async (storage) => {
         const node = resolvePath(storage, path);
         const size = calcSize(node);
-        const mb   = (size / 1048576).toFixed(2);
-        return { content: [{ type: 'text', text: JSON.stringify({ path, tipo: node.directory ? 'pasta' : 'arquivo', tamanho_bytes: size, tamanho_mb: mb + ' MB' }, null, 2) }] };
+        return { content: [{ type: 'text', text: JSON.stringify({ path, tipo: node.directory ? 'pasta' : 'arquivo', tamanho_bytes: size, tamanho_mb: (size / 1048576).toFixed(2) + ' MB' }, null, 2) }] };
       });
     }
   );
 
   server.tool('mega_mkdir',
     'Cria uma nova pasta no MEGA',
-    {
-      name:   z.string().describe('Nome da nova pasta'),
-      parent: z.string().optional().describe('Pasta pai (vazio = raiz)'),
-    },
+    { name: z.string().describe('Nome da nova pasta'), parent: z.string().optional().describe('Pasta pai (vazio = raiz)') },
     async ({ name, parent }) => {
       return withStorage(async (storage) => {
         const parentNode = parent ? resolvePath(storage, parent) : storage.root;
-        await new Promise((res, rej) => {
-          parentNode.mkdir(name, (err, folder) => err ? rej(err) : res(folder));
-        });
+        await new Promise((res, rej) => parentNode.mkdir(name, (err, folder) => err ? rej(err) : res(folder)));
         const fullPath = parent ? `${parent}/${name}` : `/${name}`;
         return { content: [{ type: 'text', text: `Pasta '${fullPath}' criada com sucesso.` }] };
       });
@@ -328,9 +305,7 @@ function createServer() {
     async ({ path }) => {
       return withStorage(async (storage) => {
         const node = resolvePath(storage, path);
-        await new Promise((res, rej) => {
-          node.delete(false, (err) => err ? rej(err) : res());
-        });
+        await new Promise((res, rej) => node.delete(false, (err) => err ? rej(err) : res()));
         return { content: [{ type: 'text', text: `'${path}' removido com sucesso.` }] };
       });
     }
@@ -338,21 +313,16 @@ function createServer() {
 
   server.tool('mega_mv',
     'Move ou renomeia um arquivo ou pasta no MEGA',
-    {
-      source: z.string().describe('Caminho de origem'),
-      dest:   z.string().describe('Novo caminho ou novo nome'),
-    },
+    { source: z.string().describe('Caminho de origem'), dest: z.string().describe('Novo caminho ou novo nome') },
     async ({ source, dest }) => {
       return withStorage(async (storage) => {
-        const node        = resolvePath(storage, source);
-        const destParts   = dest.split('/');
-        const newName     = destParts.pop();
+        const node = resolvePath(storage, source);
+        const destParts = dest.split('/'), newName = destParts.pop();
         const destParentPath = destParts.join('/');
-        const destParent  = destParentPath ? resolvePath(storage, destParentPath) : storage.root;
+        const destParent = destParentPath ? resolvePath(storage, destParentPath) : storage.root;
         await new Promise((res, rej) => node.moveTo(destParent, (err) => err ? rej(err) : res()));
-        if (newName && newName !== node.name) {
+        if (newName && newName !== node.name)
           await new Promise((res, rej) => node.rename(newName, (err) => err ? rej(err) : res()));
-        }
         return { content: [{ type: 'text', text: `Movido/renomeado de '${source}' para '${dest}'.` }] };
       });
     }
@@ -360,14 +330,10 @@ function createServer() {
 
   server.tool('mega_cp',
     'Copia um arquivo para outra pasta no MEGA',
-    {
-      source: z.string().describe('Caminho do arquivo de origem'),
-      dest:   z.string().describe('Caminho da pasta destino'),
-    },
+    { source: z.string().describe('Caminho do arquivo de origem'), dest: z.string().describe('Caminho da pasta destino') },
     async ({ source, dest }) => {
       return withStorage(async (storage) => {
-        const node     = resolvePath(storage, source);
-        const destNode = resolvePath(storage, dest);
+        const node = resolvePath(storage, source), destNode = resolvePath(storage, dest);
         await new Promise((res, rej) => node.copyTo(destNode, (err) => err ? rej(err) : res()));
         return { content: [{ type: 'text', text: `Copiado '${source}' para '${dest}'.` }] };
       });
@@ -382,8 +348,7 @@ function createServer() {
         const node = resolvePath(storage, path);
         if (node.directory) throw new Error('O caminho informado e uma pasta, nao um arquivo');
         const data = await new Promise((res, rej) => {
-          const chunks = [];
-          const stream = node.download();
+          const chunks = [], stream = node.download();
           stream.on('data', (chunk) => chunks.push(chunk));
           stream.on('end', () => res(Buffer.concat(chunks).toString('utf8')));
           stream.on('error', rej);
@@ -418,11 +383,8 @@ function createServer() {
         const folder = path ? resolvePath(storage, path) : storage.root;
         const resp   = await fetch(url);
         if (!resp.ok) throw new Error(`Erro ao baixar URL: ${resp.status} ${resp.statusText}`);
-        const arrayBuf = await resp.arrayBuffer();
-        const buf      = Buffer.from(arrayBuf);
-        await new Promise((res, rej) => {
-          folder.upload({ name: filename, size: buf.length }, buf, (err) => err ? rej(err) : res());
-        });
+        const buf = Buffer.from(await resp.arrayBuffer());
+        await new Promise((res, rej) => folder.upload({ name: filename, size: buf.length }, buf, (err) => err ? rej(err) : res()));
         return { content: [{ type: 'text', text: `Arquivo '${filename}' (${buf.length} bytes) enviado com sucesso para '${path || '/'}.'` }] };
       });
     }
@@ -430,19 +392,13 @@ function createServer() {
 
   server.tool('mega_export',
     'Cria um link publico de compartilhamento para um arquivo ou pasta',
-    {
-      path:     z.string().describe('Caminho do arquivo ou pasta'),
-      password: z.string().optional().describe('Senha para proteger o link (opcional)'),
-    },
+    { path: z.string().describe('Caminho do arquivo ou pasta'), password: z.string().optional().describe('Senha para proteger o link (opcional)') },
     async ({ path, password }) => {
       return withStorage(async (storage) => {
         const node = resolvePath(storage, path);
         const link = await new Promise((res, rej) => {
-          if (password) {
-            node.link({ noKey: false, password }, (err, url) => err ? rej(err) : res(url));
-          } else {
-            node.link((err, url) => err ? rej(err) : res(url));
-          }
+          if (password) node.link({ noKey: false, password }, (err, url) => err ? rej(err) : res(url));
+          else          node.link((err, url) => err ? rej(err) : res(url));
         });
         return { content: [{ type: 'text', text: JSON.stringify({ path, link, protegido_com_senha: !!password }, null, 2) }] };
       });
@@ -451,17 +407,12 @@ function createServer() {
 
   server.tool('mega_share',
     'Compartilha uma pasta com outro usuario MEGA via email',
-    {
-      path:  z.string().describe('Caminho da pasta a compartilhar'),
-      email: z.string().describe('Email do usuario MEGA a convidar'),
-    },
+    { path: z.string().describe('Caminho da pasta a compartilhar'), email: z.string().describe('Email do usuario MEGA a convidar') },
     async ({ path, email }) => {
       return withStorage(async (storage) => {
         const node = resolvePath(storage, path);
         if (!node.directory) throw new Error('Somente pastas podem ser compartilhadas');
-        await new Promise((res, rej) => {
-          node.share({ user: email, access: 1 }, (err) => err ? rej(err) : res());
-        });
+        await new Promise((res, rej) => node.share({ user: email, access: 1 }, (err) => err ? rej(err) : res()));
         return { content: [{ type: 'text', text: `Pasta '${path}' compartilhada com ${email}.` }] };
       });
     }
@@ -469,16 +420,11 @@ function createServer() {
 
   server.tool('mega_import',
     'Importa um link publico do MEGA para dentro da sua conta',
-    {
-      link: z.string().describe('Link publico do MEGA a importar'),
-      path: z.string().optional().describe('Pasta destino (vazio = raiz)'),
-    },
+    { link: z.string().describe('Link publico do MEGA a importar'), path: z.string().optional().describe('Pasta destino (vazio = raiz)') },
     async ({ link, path }) => {
       return withStorage(async (storage) => {
         const destFolder = path ? resolvePath(storage, path) : storage.root;
-        const imported   = await new Promise((res, rej) => {
-          storage.import(link, destFolder, (err, node) => err ? rej(err) : res(node));
-        });
+        const imported   = await new Promise((res, rej) => storage.import(link, destFolder, (err, node) => err ? rej(err) : res(node)));
         return { content: [{ type: 'text', text: `Link importado com sucesso. Nome: '${imported.name}', Tamanho: ${imported.size || 0} bytes.` }] };
       });
     }
@@ -493,29 +439,15 @@ function createServer() {
       return withStorage(async (storage) => {
         const node = resolvePath(storage, path);
         if (node.directory) throw new Error('O caminho informado e uma pasta, nao um arquivo');
-
         const MAX_SIZE = 20 * 1024 * 1024;
-        if (node.size > MAX_SIZE) {
-          throw new Error(`Arquivo muito grande (${(node.size / 1048576).toFixed(1)} MB). Limite: 20 MB. Use mega_get para obter o link de download.`);
-        }
-
+        if (node.size > MAX_SIZE) throw new Error(`Arquivo muito grande (${(node.size / 1048576).toFixed(1)} MB). Limite: 20 MB. Use mega_get para obter o link de download.`);
         const buf = await new Promise((res, rej) => {
-          const chunks = [];
-          const stream = node.download();
+          const chunks = [], stream = node.download();
           stream.on('data', (chunk) => chunks.push(chunk));
           stream.on('end', () => res(Buffer.concat(chunks)));
           stream.on('error', rej);
         });
-
-        const base64   = buf.toString('base64');
-        const mimeType = getMimeType(node.name);
-
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({ nome: node.name, tamanho_bytes: node.size, mime_type: mimeType, base64 })
-          }]
-        };
+        return { content: [{ type: 'text', text: JSON.stringify({ nome: node.name, tamanho_bytes: node.size, mime_type: getMimeType(node.name), base64: buf.toString('base64') }) }] };
       });
     }
   );
@@ -529,60 +461,74 @@ function createServer() {
     {
       path:       z.string().describe('Caminho completo do arquivo no MEGA (ex: "MegaSync/Faculdade/arquivo.pdf")'),
       chunk:      z.number().int().min(0).describe('Indice do chunk a retornar (comeca em 0)'),
-      chunk_size: z.number().int().min(1024).max(200000).optional()
-                   .describe('Tamanho de cada chunk em bytes de base64 (padrao: 50000 ~= 37KB de dados binarios). Max: 200000.'),
+      chunk_size: z.number().int().min(1024).max(200000).optional().describe('Tamanho de cada chunk em bytes de base64 (padrao: 50000 ~= 37KB de dados binarios). Max: 200000.'),
     },
     async ({ path, chunk, chunk_size }) => {
       const CHUNK_SIZE = chunk_size || 50000;
-
       return withStorage(async (storage) => {
         const node = resolvePath(storage, path);
         if (node.directory) throw new Error('O caminho informado e uma pasta, nao um arquivo');
-
         const MAX_SIZE = 50 * 1024 * 1024;
-        if (node.size > MAX_SIZE) {
-          throw new Error(`Arquivo muito grande (${(node.size / 1048576).toFixed(1)} MB). Limite: 50 MB.`);
-        }
-
+        if (node.size > MAX_SIZE) throw new Error(`Arquivo muito grande (${(node.size / 1048576).toFixed(1)} MB). Limite: 50 MB.`);
         let buf = getCacheBuffer(path);
         if (!buf) {
           buf = await new Promise((res, rej) => {
-            const chunks = [];
-            const stream = node.download();
+            const chunks = [], stream = node.download();
             stream.on('data', (c) => chunks.push(c));
             stream.on('end', () => res(Buffer.concat(chunks)));
             stream.on('error', rej);
           });
           setCacheBuffer(path, buf);
         }
-
         const fullBase64  = buf.toString('base64');
         const totalChunks = Math.ceil(fullBase64.length / CHUNK_SIZE);
-
-        if (chunk >= totalChunks) {
-          throw new Error(`Chunk ${chunk} fora do intervalo. Total de chunks: ${totalChunks} (0 a ${totalChunks - 1}).`);
-        }
-
-        const start       = chunk * CHUNK_SIZE;
-        const end         = Math.min(start + CHUNK_SIZE, fullBase64.length);
-        const base64Chunk = fullBase64.slice(start, end);
-        const mimeType    = getMimeType(node.name);
-
+        if (chunk >= totalChunks) throw new Error(`Chunk ${chunk} fora do intervalo. Total de chunks: ${totalChunks} (0 a ${totalChunks - 1}).`);
+        const start = chunk * CHUNK_SIZE, end = Math.min(start + CHUNK_SIZE, fullBase64.length);
         return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              nome:               node.name,
-              mime_type:          mimeType,
-              tamanho_bytes:      node.size,
-              chunk_atual:        chunk,
-              total_chunks:       totalChunks,
-              chunk_size:         CHUNK_SIZE,
-              base64_total_chars: fullBase64.length,
-              base64_chunk:       base64Chunk,
-              concluido:          chunk === totalChunks - 1,
-            })
-          }]
+          content: [{ type: 'text', text: JSON.stringify({
+            nome: node.name, mime_type: getMimeType(node.name), tamanho_bytes: node.size,
+            chunk_atual: chunk, total_chunks: totalChunks, chunk_size: CHUNK_SIZE,
+            base64_total_chars: fullBase64.length, base64_chunk: fullBase64.slice(start, end),
+            concluido: chunk === totalChunks - 1,
+          }) }]
+        };
+      });
+    }
+  );
+
+  // ── FERRAMENTAS v2.5 ──────────────────────────────────────────────────
+
+  server.tool('mega_search',
+    'Busca arquivos e pastas por nome em toda a arvore do MEGA (ou dentro de uma pasta especifica). ' +
+    'Suporta busca parcial (ex: "relatorio") e glob simples (ex: "*.pdf", "foto_202?"). ' +
+    'Retorna o caminho completo de cada resultado para uso direto nas outras ferramentas.',
+    {
+      query:  z.string().describe('Texto a buscar no nome do arquivo/pasta. Suporta * e ? como wildcards (ex: "*.pdf", "relatorio*", "foto_202?")'),
+      path:   z.string().optional().describe('Pasta raiz da busca (vazio = busca em todo o MEGA)'),
+      tipo:   z.enum(['all', 'file', 'folder']).optional().describe('Filtrar por tipo: all (padrao), file (apenas arquivos), folder (apenas pastas)'),
+      limite: z.number().int().min(1).max(200).optional().describe('Numero maximo de resultados (padrao: 50, max: 200)'),
+    },
+    async ({ query, path, tipo, limite }) => {
+      if (!query || !query.trim()) throw new Error('O parametro query nao pode ser vazio');
+      const limit = limite || 50;
+      const filter = tipo || 'all';
+
+      return withStorage(async (storage) => {
+        const root    = path ? resolvePath(storage, path) : storage.root;
+        const results = [];
+        searchNodes(root, query.trim(), filter, path || '', results, limit);
+
+        const truncated = results.length >= limit;
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            query,
+            busca_em:    path || '/',
+            tipo_filtro: filter,
+            total:       results.length,
+            truncado:    truncated,
+            aviso:       truncated ? `Resultado limitado a ${limit} itens. Use o parametro 'limite' ou refine a busca.` : undefined,
+            resultados:  results,
+          }, null, 2) }]
         };
       });
     }
@@ -612,9 +558,8 @@ app.post('/mcp', async (req, res) => {
     await transport.handleRequest(req, res, req.body);
   } catch (err) {
     console.error('MCP error:', err.message);
-    if (!res.headersSent) {
+    if (!res.headersSent)
       res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: err.message }, id: null });
-    }
   }
 });
 
@@ -622,13 +567,7 @@ app.get('/mcp', (req, res) => res.status(405).json({ error: 'Method not allowed.
 
 app.get('/health', (req, res) => {
   const sessionAge = _lastLoginAt ? Math.round((Date.now() - _lastLoginAt) / 1000 / 60) : null;
-  res.json({
-    status:       'ok',
-    version:      VERSION,
-    tools:        TOOLS_COUNT,
-    mega_session: _storage ? 'connected' : 'disconnected',
-    session_age_minutes: sessionAge,
-  });
+  res.json({ status: 'ok', version: VERSION, tools: TOOLS_COUNT, mega_session: _storage ? 'connected' : 'disconnected', session_age_minutes: sessionAge });
 });
 
 app.listen(PORT, () => console.log(`MCP server v${VERSION} rodando na porta ${PORT}`));
