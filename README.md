@@ -7,12 +7,18 @@
 ![License](https://img.shields.io/badge/Licença-MIT-blue?style=for-the-badge)
 ![MCP](https://img.shields.io/badge/Protocol-MCP-6366f1?style=for-the-badge)
 ![MEGA](https://img.shields.io/badge/Storage-MEGA.io-d9272e?style=for-the-badge&logo=mega&logoColor=white)
+![Status](https://img.shields.io/badge/Status-Produção%20✅-22c55e?style=for-the-badge)
+![Version](https://img.shields.io/badge/Versão-1.0.0-f59e0b?style=for-the-badge)
 
 **Servidor [Model Context Protocol (MCP)](https://modelcontextprotocol.io) que conecta sua conta MEGA.io ao Perplexity — funcionando como um conector nativo, igual ao Google Drive e OneDrive.**
 
 [🚀 Deploy Rápido](#-deploy-gratuito) · [📖 Documentação](#-ferramentas-disponíveis) · [🔌 Conectar ao Perplexity](#-conectando-ao-perplexity)
 
 </div>
+
+---
+
+> ✅ **Conexão verificada em produção** — integração com o Perplexity funcionando plenamente em 21/05/2026. O servidor está rodando no Render e todas as 20 ferramentas MCP foram testadas com sucesso, incluindo leitura de PDFs do MEGA diretamente no chat.
 
 ---
 
@@ -25,6 +31,7 @@ Com ele você pode pedir ao Perplexity coisas como:
 - *"Qual o espaço disponível na minha conta MEGA?"*
 - *"Gere um link público para o arquivo relatório.pdf"*
 - *"Leia o conteúdo do arquivo notas.txt"*
+- *"Leia o PDF X e me faça um resumo"*
 
 ---
 
@@ -109,7 +116,7 @@ npm start
 
 ## 🚀 Deploy Gratuito
 
-### Render *(recomendado)*
+### Render *(recomendado — testado em produção)*
 
 1. Crie conta em [render.com](https://render.com)
 2. **New** → **Web Service** → conecte este repositório
