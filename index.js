@@ -10,7 +10,7 @@ process.on('uncaughtException', (err) => console.error('Uncaught:', err.message)
 process.on('unhandledRejection', (r) => console.error('Rejection:', r));
 
 // ── Constante única de versão e total de ferramentas ──────────────────────────
-const VERSION     = '2.5.0';
+const VERSION     = '2.5.1';
 const TOOLS_COUNT = 21;
 
 const MEGA_EMAIL       = process.env.MEGA_EMAIL;
@@ -107,7 +107,6 @@ function resolvePath(storage, path) {
 }
 
 // Busca recursiva por nome em toda a arvore a partir de um no raiz
-// query: string simples (contida no nome, case-insensitive) ou glob com * e ?
 function searchNodes(node, query, tipo, parentPath, results, limit) {
   if (results.length >= limit) return;
   const children = node.children || [];
@@ -115,29 +114,23 @@ function searchNodes(node, query, tipo, parentPath, results, limit) {
     if (results.length >= limit) break;
     const childPath = parentPath ? `${parentPath}/${child.name}` : child.name;
     const isFolder  = !!child.directory;
-
-    // Filtro de tipo
-    if (tipo === 'file'   &&  isFolder) { /* pula */ }
+    if (tipo === 'file' && isFolder) { /* pula */ }
     else if (tipo === 'folder' && !isFolder) { /* pula */ }
     else {
-      // Correspondeência: suporte a glob simples (* e ?)
       const nameLC  = (child.name || '').toLowerCase();
       const queryLC = query.toLowerCase();
       const matched = queryLC.includes('*') || queryLC.includes('?')
         ? globMatch(nameLC, queryLC)
         : nameLC.includes(queryLC);
-
       if (matched) {
         results.push({
-          nome:   child.name,
-          tipo:   isFolder ? 'folder' : 'file',
-          path:   childPath,
+          nome:          child.name,
+          tipo:          isFolder ? 'folder' : 'file',
+          path:          childPath,
           tamanho_bytes: isFolder ? null : (child.size || 0),
         });
       }
     }
-
-    // Desce na pasta independente de match
     if (isFolder) searchNodes(child, query, tipo, childPath, results, limit);
   }
 }
@@ -191,10 +184,11 @@ function purgeCacheExpired() {
 }
 setInterval(purgeCacheExpired, 5 * 60 * 1000);
 
-function createServer() {
+// ── McpServer criado UMA VEZ no boot — sessão MEGA compartilhada ──────────────
+function buildMcpServer() {
   const server = new McpServer({ name: 'mega-mcp-server', version: VERSION });
 
-  // ── FERRAMENTAS ORIGINAIS ──────────────────────────────────────────────
+  // ── FERRAMENTAS ORIGINAIS ────────────────────────────────────────────
 
   server.tool('list_files',
     'Lista arquivos e pastas no MEGA. Use path para navegar (ex: "" para raiz, "Filmes" para a pasta Filmes)',
@@ -243,7 +237,7 @@ function createServer() {
     }
   );
 
-  // ── NOVAS FERRAMENTAS v2.0 ────────────────────────────────────────────
+  // ── NOVAS FERRAMENTAS v2.0 ──────────────────────────────────────────
 
   server.tool('mega_pwd', 'Mostra o diretorio raiz do MEGA', {},
     async () => { await getStorage(); return { content: [{ type: 'text', text: '/' }] }; }
@@ -430,7 +424,7 @@ function createServer() {
     }
   );
 
-  // ── FERRAMENTAS v2.1 ──────────────────────────────────────────────────
+  // ── FERRAMENTAS v2.1 ────────────────────────────────────────────────
 
   server.tool('mega_download_base64',
     'Baixa um arquivo binario do MEGA e retorna seu conteudo em base64. Use para anexar PDFs, imagens e outros arquivos diretamente no chat.',
@@ -452,7 +446,7 @@ function createServer() {
     }
   );
 
-  // ── FERRAMENTAS v2.2 ──────────────────────────────────────────────────
+  // ── FERRAMENTAS v2.2 ────────────────────────────────────────────────
 
   server.tool('mega_download_base64_chunk',
     'Baixa um arquivo do MEGA em chunks de base64. Permite ler arquivos de qualquer tamanho sem truncamento. ' +
@@ -496,7 +490,7 @@ function createServer() {
     }
   );
 
-  // ── FERRAMENTAS v2.5 ──────────────────────────────────────────────────
+  // ── FERRAMENTAS v2.5 ────────────────────────────────────────────────
 
   server.tool('mega_search',
     'Busca arquivos e pastas por nome em toda a arvore do MEGA (ou dentro de uma pasta especifica). ' +
@@ -510,14 +504,12 @@ function createServer() {
     },
     async ({ query, path, tipo, limite }) => {
       if (!query || !query.trim()) throw new Error('O parametro query nao pode ser vazio');
-      const limit = limite || 50;
-      const filter = tipo || 'all';
-
+      const limit  = limite || 50;
+      const filter = tipo   || 'all';
       return withStorage(async (storage) => {
         const root    = path ? resolvePath(storage, path) : storage.root;
         const results = [];
         searchNodes(root, query.trim(), filter, path || '', results, limit);
-
         const truncated = results.length >= limit;
         return {
           content: [{ type: 'text', text: JSON.stringify({
@@ -537,6 +529,9 @@ function createServer() {
   return server;
 }
 
+// ── Instância única — criada no boot, compartilhada entre todas as requisições ─
+const mcpServer = buildMcpServer();
+
 const app = express();
 app.use(express.json());
 
@@ -551,10 +546,9 @@ function checkAuth(req, res) {
 app.post('/mcp', async (req, res) => {
   if (!checkAuth(req, res)) return;
   try {
-    const server    = createServer();
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
     res.on('close', () => transport.close());
-    await server.connect(transport);
+    await mcpServer.connect(transport);
     await transport.handleRequest(req, res, req.body);
   } catch (err) {
     console.error('MCP error:', err.message);
@@ -569,5 +563,8 @@ app.get('/health', (req, res) => {
   const sessionAge = _lastLoginAt ? Math.round((Date.now() - _lastLoginAt) / 1000 / 60) : null;
   res.json({ status: 'ok', version: VERSION, tools: TOOLS_COUNT, mega_session: _storage ? 'connected' : 'disconnected', session_age_minutes: sessionAge });
 });
+
+// Pré-aquece a sessão MEGA no boot para que a primeira requisição MCP não precise aguardar o login
+getStorage().catch((err) => console.error('MEGA: falha no login inicial:', err.message));
 
 app.listen(PORT, () => console.log(`MCP server v${VERSION} rodando na porta ${PORT}`));
