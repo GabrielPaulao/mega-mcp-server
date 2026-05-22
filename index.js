@@ -9,7 +9,7 @@ import { z } from 'zod';
 process.on('uncaughtException', (err) => console.error('Uncaught:', err.message));
 process.on('unhandledRejection', (r) => console.error('Rejection:', r));
 
-const VERSION     = '2.6.0';
+const VERSION     = '2.6.1';
 const TOOLS_COUNT = 21;
 
 const MEGA_EMAIL       = process.env.MEGA_EMAIL;
@@ -26,9 +26,9 @@ let _lastLoginAt    = null;
 let _retryTimer     = null;
 
 const SESSION_MAX_AGE_MS = 4 * 60 * 60 * 1000;
-const LOGIN_TIMEOUT_MS   = 120_000;  // 120s — Render pode ser lento no boot
+const LOGIN_TIMEOUT_MS   = 120_000;
 const MAX_RETRIES        = 5;
-const RETRY_DELAYS_MS    = [5_000, 15_000, 30_000, 60_000, 120_000]; // backoff
+const RETRY_DELAYS_MS    = [5_000, 15_000, 30_000, 60_000, 120_000];
 
 // Tenta o login uma unica vez com timeout
 function attemptLogin() {
@@ -65,9 +65,10 @@ async function loginWithRetry(attempt = 0) {
     return storage;
   } catch (err) {
     const nextAttempt = attempt + 1;
+    console.error(`MEGA: falha no login (tentativa ${nextAttempt}/${MAX_RETRIES}): ${err.message}`);
     if (nextAttempt < MAX_RETRIES) {
       const delay = RETRY_DELAYS_MS[attempt] ?? 120_000;
-      console.error(`MEGA: falha no login (tentativa ${nextAttempt}/${MAX_RETRIES}): ${err.message}. Retentando em ${delay / 1000}s...`);
+      console.error(`MEGA: retentando em ${delay / 1000}s...`);
       _storagePromise = new Promise((resolve) => {
         _retryTimer = setTimeout(async () => {
           _retryTimer = null;
@@ -77,7 +78,6 @@ async function loginWithRetry(attempt = 0) {
       return _storagePromise;
     }
     console.error(`MEGA: falha definitiva apos ${MAX_RETRIES} tentativas: ${err.message}`);
-    // Agenda nova tentativa em 5 minutos para nao bloquear o processo
     _storagePromise = null;
     _retryTimer = setTimeout(() => {
       _retryTimer = null;
@@ -90,7 +90,7 @@ async function loginWithRetry(attempt = 0) {
 
 async function isSessionAlive(storage) {
   try {
-    if (!storage.root) return false;
+    if (!storage || !storage.root) return false;
     if (_lastLoginAt && (Date.now() - _lastLoginAt) > SESSION_MAX_AGE_MS) {
       console.log('MEGA: sessao expirou por tempo (>4h), reconectando...');
       return false;
@@ -200,6 +200,20 @@ function getCacheBuffer(key) {
   return entry.buf;
 }
 setInterval(() => { const now = Date.now(); for (const [k, e] of _bufferCache) if (now - e.ts > CACHE_TTL_MS) _bufferCache.delete(k); }, 5 * 60 * 1000);
+
+// ── Keep-alive: faz ping no /health a cada 10 minutos para evitar hibernacao ──
+function startKeepAlive() {
+  const KEEP_ALIVE_INTERVAL_MS = 10 * 60 * 1000;
+  setInterval(async () => {
+    try {
+      const res = await fetch(`http://localhost:${PORT}/health`);
+      if (!res.ok) console.warn('Keep-alive: resposta inesperada', res.status);
+    } catch (e) {
+      console.warn('Keep-alive: erro no ping:', e.message);
+    }
+  }, KEEP_ALIVE_INTERVAL_MS);
+  console.log(`Keep-alive ativo (ping a cada ${KEEP_ALIVE_INTERVAL_MS / 60000} min)`);
+}
 
 // ── McpServer — instancia unica criada no boot ────────────────────────────────
 function buildMcpServer() {
@@ -488,6 +502,13 @@ app.get('/health', (req, res) => {
 
 // Pre-aquece a sessao MEGA no boot com retry automatico
 console.log(`MCP server v${VERSION} rodando na porta ${PORT}`);
-getStorage().catch(() => { /* erros ja logados em loginWithRetry */ });
-
-app.listen(PORT);
+app.listen(PORT, () => {
+  getStorage()
+    .then(() => startKeepAlive())
+    .catch((err) => {
+      console.error('MEGA: erro critico no boot:', err.message);
+      // Nao encerra o processo — o ciclo de retry em loginWithRetry ja cuida da reconexao
+      // Inicia o keep-alive mesmo assim para manter o processo vivo no Render
+      startKeepAlive();
+    });
+});
