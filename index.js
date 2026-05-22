@@ -9,7 +9,7 @@ import { z } from 'zod';
 process.on('uncaughtException', (err) => console.error('Uncaught:', err.message));
 process.on('unhandledRejection', (r) => console.error('Rejection:', r));
 
-const VERSION     = '2.8.0';
+const VERSION     = '2.8.1';
 const TOOLS_COUNT = 21;
 
 const MEGA_EMAIL       = process.env.MEGA_EMAIL;
@@ -30,8 +30,6 @@ const LOGIN_TIMEOUT_MS   = 120_000;
 const MAX_RETRIES        = 5;
 const RETRY_DELAYS_MS    = [5_000, 15_000, 30_000, 60_000, 120_000];
 
-let _quotaBytes = { used: 0, total: 0 };
-
 function attemptLogin() {
   const loginOpts = { email: MEGA_EMAIL, password: MEGA_PASSWORD, keepalive: false };
   if (MEGA_TOTP_SECRET) {
@@ -46,34 +44,14 @@ function attemptLogin() {
     const timer = setTimeout(() => {
       reject(new Error(`MEGA login timeout after ${LOGIN_TIMEOUT_MS / 1000}s`));
     }, LOGIN_TIMEOUT_MS);
-
     const storage = new Storage(loginOpts);
-
-    storage.on('ready', async () => {
+    storage.on('ready', () => {
       clearTimeout(timer);
       _storage     = storage;
       _lastLoginAt = Date.now();
-
-      // FIX mega_df: força reload para popular bytesUsed/bytesTotal
-      try {
-        await new Promise((res, rej) => {
-          storage.reload(true, (err) => {
-            if (err) { rej(err); return; }
-            _quotaBytes.used  = storage.bytesUsed  || 0;
-            _quotaBytes.total = storage.bytesTotal || 0;
-            console.log(`MEGA: quota apos reload (usado: ${_quotaBytes.used}, total: ${_quotaBytes.total})`);
-            res();
-          });
-        });
-      } catch (reloadErr) {
-        console.warn('MEGA: reload falhou, quota pode estar zerada:', reloadErr.message);
-        _quotaBytes.used  = storage.bytesUsed  || 0;
-        _quotaBytes.total = storage.bytesTotal || 0;
-      }
-
+      console.log('MEGA: sessao estabelecida');
       resolve(storage);
     });
-
     storage.on('error', (err) => {
       clearTimeout(timer);
       reject(err);
@@ -130,7 +108,6 @@ async function getStorage() {
       console.log('MEGA: sessao invalida, reconectando...');
       try { _storage.close?.(); } catch { /* ignora */ }
       _storage = null; _storagePromise = null; _lastLoginAt = null;
-      _quotaBytes = { used: 0, total: 0 };
     }
   }
   if (!_storagePromise) _storagePromise = loginWithRetry(0);
@@ -151,7 +128,6 @@ async function withStorage(fn) {
       console.log(`MEGA: erro de sessao ("${err.message}"), reconectando...`);
       try { _storage?.close?.(); } catch { /* ignora */ }
       _storage = null; _storagePromise = null; _lastLoginAt = null;
-      _quotaBytes = { used: 0, total: 0 };
       storage = await getStorage();
       return await fn(storage);
     }
@@ -300,21 +276,20 @@ function buildMcpServer() {
     })
   );
 
+  // mega_df: quota nao disponivel no plano free (512MB RAM) sem storage.reload()
+  // storage.bytesUsed/bytesTotal do megajs so sao populados apos reload, que causa OOM
   server.tool('mega_df', 'Mostra o espaco total e usado na conta MEGA', {},
     async () => withStorage(async (storage) => {
-      const bytesUsed  = _quotaBytes.used  || storage.bytesUsed  || 0;
-      const bytesTotal = _quotaBytes.total || storage.bytesTotal || 0;
+      const bytesUsed  = storage.bytesUsed  || 0;
+      const bytesTotal = storage.bytesTotal || 0;
       const gb = (b) => (b / 1073741824).toFixed(2) + ' GB';
-      const aviso = bytesTotal === 0
-        ? 'Quota nao disponivel ainda — tente novamente em alguns segundos.'
-        : undefined;
       return { content: [{ type: 'text', text: JSON.stringify({
         usado:        gb(bytesUsed),
         total:        gb(bytesTotal),
-        livre:        gb(bytesTotal - bytesUsed),
+        livre:        bytesTotal > 0 ? gb(bytesTotal - bytesUsed) : 'N/A',
         bytes_usados: bytesUsed,
         bytes_total:  bytesTotal,
-        ...(aviso && { aviso }),
+        ...(bytesTotal === 0 && { aviso: 'Quota indisponivel neste plano de hospedagem. Para ver o espaco usado, acesse mega.nz diretamente.' }),
       }, null, 2) }] };
     })
   );
@@ -555,8 +530,6 @@ app.get('/health', (req, res) => {
     mega_session:        _storage ? 'connected' : 'disconnected',
     session_age_minutes: sessionAge,
     retry_pending:       !!_retryTimer,
-    quota_bytes_used:    _quotaBytes.used,
-    quota_bytes_total:   _quotaBytes.total,
   });
 });
 
