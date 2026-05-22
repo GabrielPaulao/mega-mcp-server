@@ -9,7 +9,7 @@ import { z } from 'zod';
 process.on('uncaughtException', (err) => console.error('Uncaught:', err.message));
 process.on('unhandledRejection', (r) => console.error('Rejection:', r));
 
-const VERSION     = '2.6.3';
+const VERSION     = '2.7.0';
 const TOOLS_COUNT = 21;
 
 const MEGA_EMAIL       = process.env.MEGA_EMAIL;
@@ -30,6 +30,9 @@ const LOGIN_TIMEOUT_MS   = 120_000;
 const MAX_RETRIES        = 5;
 const RETRY_DELAYS_MS    = [5_000, 15_000, 30_000, 60_000, 120_000];
 
+// FIX mega_df: armazena quota recebida pelo evento 'storage' da sessao
+let _quotaBytes = { used: 0, total: 0 };
+
 function attemptLogin() {
   const loginOpts = { email: MEGA_EMAIL, password: MEGA_PASSWORD, keepalive: false };
   if (MEGA_TOTP_SECRET) {
@@ -49,8 +52,19 @@ function attemptLogin() {
       clearTimeout(timer);
       _storage = storage;
       _lastLoginAt = Date.now();
-      console.log('MEGA: sessao estabelecida');
+      // FIX mega_df: captura quota logo apos o ready, quando disponivel
+      _quotaBytes.used  = storage.bytesUsed  || 0;
+      _quotaBytes.total = storage.bytesTotal || 0;
+      console.log(`MEGA: sessao estabelecida (usado: ${_quotaBytes.used}, total: ${_quotaBytes.total})`);
       resolve(storage);
+    });
+    // FIX mega_df: evento 'storage' do megajs carrega quota de forma assincrona
+    storage.on('storage', (data) => {
+      if (data && typeof data.used === 'number') {
+        _quotaBytes.used  = data.used;
+        _quotaBytes.total = data.total || _quotaBytes.total;
+        console.log(`MEGA: quota atualizada (usado: ${_quotaBytes.used}, total: ${_quotaBytes.total})`);
+      }
     });
     storage.on('error', (err) => {
       clearTimeout(timer);
@@ -108,6 +122,7 @@ async function getStorage() {
       console.log('MEGA: sessao invalida, reconectando...');
       try { _storage.close?.(); } catch { /* ignora */ }
       _storage = null; _storagePromise = null; _lastLoginAt = null;
+      _quotaBytes = { used: 0, total: 0 };
     }
   }
   if (!_storagePromise) _storagePromise = loginWithRetry(0);
@@ -128,6 +143,7 @@ async function withStorage(fn) {
       console.log(`MEGA: erro de sessao ("${err.message}"), reconectando...`);
       try { _storage?.close?.(); } catch { /* ignora */ }
       _storage = null; _storagePromise = null; _lastLoginAt = null;
+      _quotaBytes = { used: 0, total: 0 };
       storage = await getStorage();
       return await fn(storage);
     }
@@ -216,6 +232,13 @@ function startKeepAlive() {
   console.log(`Keep-alive ativo (ping a cada ${KEEP_ALIVE_INTERVAL_MS / 60000} min)`);
 }
 
+// Mapa de niveis de acesso para mega_share
+const SHARE_ACCESS_LEVELS = {
+  leitura:     0,
+  leitura_escrita: 1,
+  full:        2,
+};
+
 function buildMcpServer() {
   const server = new McpServer({ name: 'mega-mcp-server', version: VERSION });
 
@@ -248,8 +271,17 @@ function buildMcpServer() {
     })
   );
 
-  server.tool('mega_pwd', 'Mostra o diretorio raiz do MEGA', {},
-    async () => { await getStorage(); return { content: [{ type: 'text', text: '/' }] }; }
+  // FIX mega_pwd: retorna informacoes reais da conta ao inves de string estatica
+  server.tool('mega_pwd', 'Mostra o diretorio raiz e informacoes basicas da conta MEGA', {},
+    async () => withStorage(async (storage) => {
+      const rootChildren = (storage.root.children || []).length;
+      return { content: [{ type: 'text', text: JSON.stringify({
+        diretorio_raiz: '/',
+        total_itens_raiz: rootChildren,
+        email: MEGA_EMAIL,
+        sessao: 'conectada',
+      }, null, 2) }] };
+    })
   );
 
   server.tool('mega_cd', 'Navega para uma pasta e lista seu conteudo',
@@ -262,11 +294,23 @@ function buildMcpServer() {
     })
   );
 
+  // FIX mega_df: usa _quotaBytes populado pelo evento 'storage' no login, com fallback para storage.bytesUsed
   server.tool('mega_df', 'Mostra o espaco total e usado na conta MEGA', {},
     async () => withStorage(async (storage) => {
-      const bytesUsed = storage.bytesUsed || 0, bytesTotal = storage.bytesTotal || 0;
+      const bytesUsed  = _quotaBytes.used  || storage.bytesUsed  || 0;
+      const bytesTotal = _quotaBytes.total || storage.bytesTotal || 0;
       const gb = (b) => (b / 1073741824).toFixed(2) + ' GB';
-      return { content: [{ type: 'text', text: JSON.stringify({ usado: gb(bytesUsed), total: gb(bytesTotal), livre: gb(bytesTotal - bytesUsed), bytes_usados: bytesUsed, bytes_total: bytesTotal }, null, 2) }] };
+      const aviso = bytesTotal === 0
+        ? 'Quota nao disponivel ainda — a API do MEGA pode demorar alguns segundos para reportar. Tente novamente em instantes.'
+        : undefined;
+      return { content: [{ type: 'text', text: JSON.stringify({
+        usado:       gb(bytesUsed),
+        total:       gb(bytesTotal),
+        livre:       gb(bytesTotal - bytesUsed),
+        bytes_usados: bytesUsed,
+        bytes_total:  bytesTotal,
+        ...(aviso && { aviso }),
+      }, null, 2) }] };
     })
   );
 
@@ -318,11 +362,15 @@ function buildMcpServer() {
     })
   );
 
+  // FIX mega_cat: adiciona limite de tamanho para evitar travamento com arquivos grandes
+  const MEGA_CAT_MAX_MB = 10;
   server.tool('mega_cat', 'Le o conteudo de um arquivo de texto armazenado no MEGA',
     { path: z.string().describe('Caminho do arquivo') },
     async ({ path }) => withStorage(async (storage) => {
       const node = resolvePath(storage, path);
       if (node.directory) throw new Error('O caminho informado e uma pasta, nao um arquivo');
+      if (node.size > MEGA_CAT_MAX_MB * 1024 * 1024)
+        throw new Error(`Arquivo muito grande para mega_cat (${(node.size / 1048576).toFixed(1)} MB). Limite: ${MEGA_CAT_MAX_MB} MB. Use mega_download_base64_chunk para arquivos grandes.`);
       const data = await new Promise((res, rej) => {
         const chunks = [], stream = node.download();
         stream.on('data', (chunk) => chunks.push(chunk));
@@ -367,13 +415,20 @@ function buildMcpServer() {
     })
   );
 
+  // FIX mega_share: expoe nivel de acesso como parametro (leitura | leitura_escrita | full)
   server.tool('mega_share', 'Compartilha uma pasta com outro usuario MEGA via email',
-    { path: z.string().describe('Caminho da pasta a compartilhar'), email: z.string().describe('Email do usuario MEGA a convidar') },
-    async ({ path, email }) => withStorage(async (storage) => {
+    {
+      path:   z.string().describe('Caminho da pasta a compartilhar'),
+      email:  z.string().describe('Email do usuario MEGA a convidar'),
+      acesso: z.enum(['leitura', 'leitura_escrita', 'full']).optional()
+               .describe('Nivel de acesso: leitura (0), leitura_escrita (1, padrao) ou full (2)'),
+    },
+    async ({ path, email, acesso }) => withStorage(async (storage) => {
       const node = resolvePath(storage, path);
       if (!node.directory) throw new Error('Somente pastas podem ser compartilhadas');
-      await new Promise((res, rej) => node.share({ user: email, access: 1 }, (err) => err ? rej(err) : res()));
-      return { content: [{ type: 'text', text: `Pasta '${path}' compartilhada com ${email}.` }] };
+      const accessLevel = SHARE_ACCESS_LEVELS[acesso ?? 'leitura_escrita'];
+      await new Promise((res, rej) => node.share({ user: email, access: accessLevel }, (err) => err ? rej(err) : res()));
+      return { content: [{ type: 'text', text: `Pasta '${path}' compartilhada com ${email} (acesso: ${acesso ?? 'leitura_escrita'}).` }] };
     })
   );
 
@@ -497,6 +552,8 @@ app.get('/health', (req, res) => {
     mega_session:        _storage ? 'connected' : 'disconnected',
     session_age_minutes: sessionAge,
     retry_pending:       !!_retryTimer,
+    quota_bytes_used:    _quotaBytes.used,
+    quota_bytes_total:   _quotaBytes.total,
   });
 });
 
