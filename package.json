@@ -1,6 +1,6 @@
 {
   "name": "mega-mcp-server",
-  "version": "2.6.1",
+  "version": "2.6.3",
   "type": "module",
   "description": "Servidor MCP que conecta o MEGA.io ao Perplexity AI",
   "main": "index.js",
@@ -9,10 +9,10 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "latest",
+    "@otplib/preset-default": "latest",
     "dotenv": "latest",
     "express": "latest",
     "megajs": "latest",
-    "otplib": "latest",
     "zod": "latest"
   }
 }

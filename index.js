@@ -1,17 +1,15 @@
 import 'dotenv/config';
 import { Storage } from 'megajs';
 import express from 'express';
-import * as OTPLib from 'otplib';
+import { authenticator } from '@otplib/preset-default';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 
-const authenticator = OTPLib.authenticator ?? OTPLib.default?.authenticator;
-
 process.on('uncaughtException', (err) => console.error('Uncaught:', err.message));
 process.on('unhandledRejection', (r) => console.error('Rejection:', r));
 
-const VERSION     = '2.6.2';
+const VERSION     = '2.6.3';
 const TOOLS_COUNT = 21;
 
 const MEGA_EMAIL       = process.env.MEGA_EMAIL;
@@ -34,9 +32,13 @@ const RETRY_DELAYS_MS    = [5_000, 15_000, 30_000, 60_000, 120_000];
 
 function attemptLogin() {
   const loginOpts = { email: MEGA_EMAIL, password: MEGA_PASSWORD, keepalive: false };
-  if (MEGA_TOTP_SECRET && authenticator) {
-    try { loginOpts.secondFactorCode = authenticator.generate(MEGA_TOTP_SECRET); }
-    catch (e) { console.error('TOTP error:', e.message); }
+  if (MEGA_TOTP_SECRET) {
+    try {
+      loginOpts.secondFactorCode = authenticator.generate(MEGA_TOTP_SECRET);
+      console.log('MEGA: TOTP gerado com sucesso');
+    } catch (e) {
+      console.error('TOTP error:', e.message);
+    }
   }
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
